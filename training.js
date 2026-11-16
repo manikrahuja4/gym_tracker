@@ -1,13 +1,21 @@
 const starter = [
-  ['Push Day', 'Chest · Shoulders · Triceps', [
-    ['Bench Press', 3, 8, 10], ['Shoulder Press', 3, 8, 10], ['Cable Pushdown', 3, 10, 12],
+  ['default-chest-triceps', 'Chest & Triceps', 'Chest · Triceps', [
+    ['Bench Press', 3, 7, 10], ['Incline Dumbbell Press', 3, 7, 10],
+    ['Pec Deck Fly', 3, 7, 10], ['Triceps Cable Pushdown', 4, 7, 10, 'Cable Pushdown'],
   ]],
-  ['Pull Day', 'Back · Biceps', [
-    ['Lat Pulldown', 3, 8, 12], ['Seated Cable Row', 3, 8, 12], ['Dumbbell Curl', 3, 10, 12],
+  ['default-back-biceps', 'Back & Biceps', 'Back · Biceps', [
+    ['Lat Pulldown', 4, 8, 12], ['Single-Arm Dumbbell Row', 3, 8, 12], ['Dumbbell Curl', 4, 8, 12],
   ]],
-  ['Leg Day', 'Quads · Hamstrings · Glutes', [
-    ['Squat', 3, 6, 10], ['Romanian Deadlift', 3, 8, 10], ['Leg Press', 3, 10, 12],
+  ['default-shoulders', 'Shoulders', 'Front · Side · Rear delts', [
+    ['Shoulder Press', 4, 8, 12], ['Lateral Raise', 3, 8, 12],
+    ['Reverse Fly', 2, 8, 12], ['Face Pull', 2, 8, 12],
   ]],
+];
+
+const forearms = [
+  ['default-wrist-curl', 'Wrist Curls', 2, 12, 20],
+  ['default-reverse-wrist-curl', 'Reverse Wrist Curls', 2, 12, 20],
+  ['default-wrist-rotation', 'Wrist Rotations', 1, 10, 15],
 ];
 
 export const uid = () => globalThis.crypto?.randomUUID?.() ??
@@ -17,23 +25,80 @@ export const dayKey = (date = new Date()) =>
 export const fromDay = day => new Date(day + 'T12:00:00');
 export const blankExercise = exerciseId => ({ exerciseId, sets:3, min:8, max:12, logs:[] });
 
+export function hasDefaultSplit(state) {
+  return starter.every(([id]) => state.routines.some(routine => routine.id === id));
+}
+
+export function addDefaultSplit(state) {
+  for (const [id, name, focus, rows] of starter) {
+    if (state.routines.some(routine => routine.id === id)) continue;
+    const items = rows.map(([exerciseName, sets, min, max, legacyName]) => {
+      const names = [exerciseName, legacyName].filter(Boolean).map(value => value.toLowerCase());
+      let exercise = state.exercises.find(row => names.includes(row.name.toLowerCase()));
+      if (!exercise) {
+        exercise = { id:uid(), name:exerciseName, increment:2.5 };
+        state.exercises.push(exercise);
+      }
+      return { exerciseId:exercise.id, sets, min, max };
+    });
+    state.routines.push({ id, name, focus, items });
+    state.nextId ??= id;
+  }
+  addDefaultForearms(state);
+}
+
+export function addDefaultForearms(state) {
+  const routine = state.routines.find(row => row.id === 'default-back-biceps');
+  if (!routine || routine.forearmsAdded) return state;
+  for (const [id, name, sets, min, max] of forearms) {
+    let exercise = state.exercises.find(row => row.name.toLowerCase() === name.toLowerCase());
+    if (!exercise) {
+      let exerciseId = id;
+      for (let suffix = 2; state.exercises.some(row => row.id === exerciseId); suffix++) {
+        exerciseId = id + '-' + suffix;
+      }
+      exercise = { id:exerciseId, name, increment:0.5 };
+      state.exercises.push(exercise);
+    }
+    const existing = routine.items.find(row => row.exerciseId === exercise.id);
+    if (existing) existing.oncePerWeek = true;
+    else routine.items.push({ exerciseId:exercise.id, sets, min, max, oncePerWeek:true });
+  }
+  routine.forearmsAdded = true;
+  return state;
+}
+
 export function initialState() {
-  const exercises = [];
-  const routines = starter.map(([name, focus, rows]) => ({
-    id:uid(), name, focus, items:rows.map(([exercise, sets, min, max]) => {
-      const exerciseId = uid();
-      exercises.push({ id:exerciseId, name:exercise, increment:2.5 });
-      return { exerciseId, sets, min, max };
-    }),
-  }));
-  return { version:1, exercises, routines, sessions:[], active:null, rest:90, nextId:routines[0].id };
+  const state = { version:1, exercises:[], routines:[], sessions:[], active:null, rest:90, nextId:null };
+  addDefaultSplit(state);
+  return state;
+}
+
+export function plannedItems(state, routine, day = dayKey()) {
+  const cutoff = fromDay(day);
+  cutoff.setDate(cutoff.getDate() - 6);
+  const firstDay = dayKey(cutoff);
+  return (routine?.items ?? []).filter(item => !item.oncePerWeek ||
+    !state.sessions.some(session => session.day >= firstDay && session.day <= day &&
+      session.items.some(previous => previous.exerciseId === item.exerciseId && previous.logs.length)));
+}
+
+export function estimateWorkoutMinutes(items, restSeconds) {
+  const setsPerExercise = items.map(item => item.skipped ? item.logs.length : item.sets)
+    .filter(sets => sets > 0);
+  const totalSets = setsPerExercise.reduce((sum, sets) => sum + sets, 0);
+  if (!totalSets) return 0;
+  const lifting = totalSets * 45;
+  const resting = (totalSets - 1) * restSeconds;
+  const switching = (setsPerExercise.length - 1) * 60;
+  return Math.ceil((lifting + resting + switching) / 60);
 }
 
 export function startWorkout(state, routine, day = dayKey(), now = Date.now()) {
   if (state.active) return state.active;
   return state.active = {
     id:uid(), routineId:routine?.id ?? null, name:routine?.name ?? 'Freestyle',
-    day, started:now, items:(routine?.items ?? []).map(item => ({ ...item, logs:[] })),
+    day, started:now, items:plannedItems(state, routine, day).map(item => ({ ...item, logs:[] })),
     index:0, restUntil:0, undo:null,
   };
 }
@@ -124,7 +189,8 @@ export function validBackup(state) {
         number(exercise.increment, 0, 100)) || !uniqueIds(state.exercises)) return false;
   const ids = new Set(state.exercises.map(exercise => exercise.id));
   const item = row => row && ids.has(row.exerciseId) && integer(row.sets, 1, 99) &&
-    integer(row.min, 1, 999) && integer(row.max, row.min, 999);
+    integer(row.min, 1, 999) && integer(row.max, row.min, 999) &&
+    (row.oncePerWeek === undefined || typeof row.oncePerWeek === 'boolean');
   const logged = row => item(row) && (row.skipped === undefined || typeof row.skipped === 'boolean') &&
     list(row.logs, set => set && number(set.weight, 0, 9999) && integer(set.reps, 1, 999) &&
       typeof set.record === 'boolean') && row.logs.length <= row.sets;
@@ -133,7 +199,8 @@ export function validBackup(state) {
     /^\d{4}-\d{2}-\d{2}$/.test(row.day) && Number.isFinite(+fromDay(row.day)) &&
     dayKey(fromDay(row.day)) === row.day && time(row.started) && list(row.items, logged);
   if (!list(state.routines, row => row && string(row.id) && string(row.name) &&
-      typeof row.focus === 'string' && row.focus.length <= 100 && list(row.items, item)) ||
+      typeof row.focus === 'string' && row.focus.length <= 100 && list(row.items, item) &&
+      (row.forearmsAdded === undefined || typeof row.forearmsAdded === 'boolean')) ||
       !uniqueIds(state.routines) || !list(state.sessions, row => session(row) && time(row.ended) &&
         row.ended >= row.started && setCount(row) > 0) || !uniqueIds(state.sessions) ||
       (state.nextId !== null && !state.routines.some(row => row.id === state.nextId))) return false;

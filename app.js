@@ -1,6 +1,7 @@
 import {
   uid, dayKey, fromDay, initialState, blankExercise, startWorkout, historyFor, setDefaults,
   coach, moveNext, logSet, undoSet, finishWorkout, setCount, volume, rounded, validBackup,
+  addDefaultSplit, hasDefaultSplit, addDefaultForearms, plannedItems, estimateWorkoutMinutes,
 } from './training.js';
 
 const storageKey = 'training-log-v1';
@@ -32,6 +33,13 @@ const exerciseOf = id => state.exercises.find(exercise => exercise.id === id);
 const exerciseName = id => exerciseOf(id)?.name ?? 'Exercise';
 const dateSort = (a, b) => b.day.localeCompare(a.day) || b.ended - a.ended;
 const loadLabel = (weight, reps) => format.format(weight) + ' kg × ' + reps;
+function durationLabel(items) {
+  const minutes = estimateWorkoutMinutes(items, state.rest);
+  if (!minutes) return '';
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return hours ? '~' + hours + ' hr' + (remainder ? ' ' + remainder + ' min' : '') : '~' + minutes + ' min';
+}
 let state = initialState();
 let storageProblem = false;
 try {
@@ -39,7 +47,7 @@ try {
   if (saved) {
     const parsed = JSON.parse(saved);
     if (!validBackup(parsed)) throw new Error('Invalid training log');
-    state = parsed;
+    state = addDefaultForearms(parsed);
   }
 } catch {
   storageProblem = true;
@@ -70,6 +78,7 @@ function update(change, replace = false) {
     if (disk !== null && !replace) {
       const parsed = JSON.parse(disk);
       if (!validBackup(parsed)) throw new Error('Invalid training log');
+      addDefaultForearms(parsed);
       if (JSON.stringify(parsed) !== JSON.stringify(state) && !storageProblem) {
         state = parsed;
         draft = null;
@@ -81,6 +90,7 @@ function update(change, replace = false) {
     }
     const next = structuredClone(state);
     change(next);
+    addDefaultForearms(next);
     localStorage.setItem(storageKey, JSON.stringify(next));
     state = next;
     storageProblem = false;
@@ -134,7 +144,8 @@ function week() {
 function todayScreen() {
   const active = state.active;
   const next = state.routines.find(routine => routine.id === state.nextId) ?? state.routines[0];
-  const plan = active?.items ?? next?.items ?? [];
+  const plan = active?.items ?? plannedItems(state, next);
+  const estimate = durationLabel(plan);
   const recent = [...state.sessions].sort(dateSort)[0];
   return '<header class="page-heading spread"><div><div class="eyebrow">' +
     escape(dateLabel(dayKey(), { weekday:'long', month:'long', day:'numeric' })) + '</div><h1>Today</h1></div>' +
@@ -143,6 +154,7 @@ function todayScreen() {
     '<div class="eyebrow"><span class="signal"></span>' + (active ? 'Workout in progress' : next ? 'Next in your split' : 'Your next workout') +
     '</div><h2>' + escape(active?.name ?? next?.name ?? 'Freestyle') + '</h2><p>' +
     escape(active ? setCount(active) + ' sets logged' : (next?.focus || plan.length + ' exercises')) + '</p>' +
+    (estimate ? '<p class="hero-estimate">' + estimate + ' total</p>' : '') +
     action(active ? 'resume' : 'start', (active ? 'Resume workout' : 'Start workout') + icon('arrow'),
       'hero-button', next ? 'data-id="' + escape(next.id) + '"' : '') +
     '</div></section>' + week() +
@@ -192,7 +204,9 @@ function workoutScreen() {
   const workout = state.active;
   const item = workout.items[workout.index];
   const count = setCount(workout);
-  const common = '<header class="spread workout-heading"><div class="eyebrow">' + escape(workout.name) +
+  const estimate = durationLabel(workout.items);
+  const common = '<header class="spread workout-heading"><div><div class="eyebrow">' + escape(workout.name) +
+    '</div>' + (estimate ? '<div class="meta">' + estimate + ' total</div>' : '') +
     '</div>' + action('finish', count ? 'Finish' : 'Discard', 'quiet') + '</header>';
   const queue = '<section class="panel"><div class="spread"><h2>Workout plan</h2>' +
     action('add-exercise', icon('plus') + ' Add exercise', 'quiet') + '</div>' +
@@ -221,6 +235,8 @@ function workoutScreen() {
     '<h1>' + escape(exerciseName(item.exerciseId)) + '</h1><div class="previous spread"><span>Same set last time</span><strong>' +
     (prior.last ? loadLabel(prior.last.weight, prior.last.reps) : 'First time for this set') + '</strong></div>' +
     (target ? '<p class="coach">' + escape(target) + '</p>' : '<p class="coach">Target · ' + item.min + '–' + item.max + ' reps</p>') +
+    (item.oncePerWeek && exerciseName(item.exerciseId).toLowerCase() === 'wrist rotations'
+      ? '<p class="meta">Reps in each direction, per arm.</p>' : '') +
     '<form id="set-form"><div class="steppers">' + stepper('weight', 'Weight · kg', increment, 0, 9999, 0.01) +
     stepper('reps', 'Reps', 1, 1, 999, 1) + '</div>' + feedback +
     '<button type="submit" class="button primary log-button" id="log-label">Log ' + loadLabel(draft.weight, draft.reps) + icon('check') + '</button></form>' +
@@ -288,12 +304,16 @@ function splitScreen() {
         '</span>' + (routine.id === state.nextId ? pill('Up next') : action('set-next', 'Set as next', 'quiet', id)) +
         '</div><h2>' + escape(routine.name) + '</h2>' + (routine.focus ? '<p class="meta">' + escape(routine.focus) + '</p>' : '') +
         '<ul class="exercise-list">' + routine.items.map(item => '<li><strong>' + escape(exerciseName(item.exerciseId)) +
+        (item.oncePerWeek ? '<br><span class="meta">Once every 7 days</span>' : '') +
         '</strong><span class="meta">' + item.sets + ' × ' + item.min + '–' + item.max + '</span></li>').join('') + '</ul>' +
         '<div class="spread routine-actions">' + action('edit-routine', 'Edit routine', 'secondary', id) + '<div class="inline">' +
         action('move-routine', '←', 'quiet', id + ' data-delta="-1" aria-label="Move earlier"' + (index === 0 ? ' disabled' : '')) +
         action('move-routine', '→', 'quiet', id + ' data-delta="1" aria-label="Move later"' + (index === state.routines.length - 1 ? ' disabled' : '')) +
         '</div></div></section>';
     }).join('') : '<div class="panel"><p class="meta">Add a routine to start your split.</p></div>') + '</div>' +
+    (!hasDefaultSplit(state) ? '<section class="panel library"><div class="spread"><div><h2>Upper-body split</h2>' +
+      '<p class="meta">Chest &amp; Triceps · Back &amp; Biceps · Shoulders</p></div>' +
+      action('add-default-split', 'Add split', 'secondary') + '</div></section>' : '') +
     '<section class="panel library"><div class="spread"><h2>Exercise library</h2>' +
     action('exercise-editor', icon('plus') + ' New exercise', 'secondary') + '</div><p class="meta">' + state.exercises.length +
     ' exercises · Customize weight increments</p>' + action('library', 'Manage exercises', 'quiet') + '</section>';
@@ -545,6 +565,11 @@ const actions = {
     go('today');
   },
   'new-routine':() => routineEditor(),
+  'add-default-split'() {
+    if (!update(addDefaultSplit)) return;
+    render();
+    notify('Upper-body routines added');
+  },
   'save-routine':() => routineEditor(null, true),
   'edit-routine':({ dataset }) => routineEditor(state.routines.find(routine => routine.id === dataset.id)),
   'routine-row'() {
@@ -650,6 +675,8 @@ const forms = {
       return;
     }
     if (!update(next => {
+      const index = next.routines.findIndex(routine => routine.id === id);
+      const previous = next.routines[index];
       const items = rows.map(({ exerciseId, exerciseName, sets, min, max }) => {
         if (exerciseName) {
           let exercise = next.exercises.find(row => row.name.toLowerCase() === exerciseName.toLowerCase());
@@ -659,10 +686,10 @@ const forms = {
           }
           exerciseId = exercise.id;
         }
-        return { exerciseId, sets, min, max };
+        const oncePerWeek = previous?.items.some(item => item.exerciseId === exerciseId && item.oncePerWeek);
+        return { exerciseId, sets, min, max, ...(oncePerWeek ? { oncePerWeek:true } : {}) };
       });
-      const index = next.routines.findIndex(routine => routine.id === id);
-      const routine = { id, name, focus, items };
+      const routine = { ...previous, id, name, focus, items };
       if (index >= 0) next.routines[index] = routine;
       else next.routines.push(routine);
       next.nextId ??= id;
@@ -728,7 +755,7 @@ window.addEventListener('storage', event => {
   try {
     const next = JSON.parse(event.newValue);
     if (!validBackup(next)) return;
-    state = next;
+    state = addDefaultForearms(next);
     draft = null;
     recap = null;
     storageProblem = false;

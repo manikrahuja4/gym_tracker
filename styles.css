@@ -69,6 +69,7 @@ p { overflow-wrap:anywhere; }
   letter-spacing:-.095em; text-wrap:balance;
 }
 .hero p { margin-top:12px; font-size:.92rem; font-weight:620; }
+.hero p.hero-estimate { margin-top:5px; font-size:.8rem; color:#3e4a22; }
 .plate {
   position:absolute; z-index:-1; width:clamp(240px, 45vw, 450px); aspect-ratio:1; top:-38%; right:-12%; border-radius:50%;
   opacity:.46; transform:rotate(-17deg) scaleY(.89);
