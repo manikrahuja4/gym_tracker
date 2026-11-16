@@ -295,8 +295,8 @@ function splitScreen() {
         '</div></div></section>';
     }).join('') : '<div class="panel"><p class="meta">Add a routine to start your split.</p></div>') + '</div>' +
     '<section class="panel library"><div class="spread"><h2>Exercise library</h2>' +
-    action('library', 'Manage exercises', 'quiet') + '</div><p class="meta">' + state.exercises.length +
-    ' exercises · Customize weight increments</p></section>';
+    action('exercise-editor', icon('plus') + ' New exercise', 'secondary') + '</div><p class="meta">' + state.exercises.length +
+    ' exercises · Customize weight increments</p>' + action('library', 'Manage exercises', 'quiet') + '</section>';
 }
 
 function render() {
@@ -364,8 +364,11 @@ function addToWorkout(next, exerciseId, mode) {
 }
 
 function routineRow(item) {
-  return '<div class="routine-row"><div class="spread"><label>Exercise<select name="exerciseId">' + options(item.exerciseId) +
-    '</select></label>' + action('remove-row', '×', 'icon-button', 'aria-label="Remove exercise"') + '</div><div class="three-fields">' +
+  const exerciseField = item.exerciseId
+    ? '<label>Exercise<select name="exerciseId">' + options(item.exerciseId) + '</select></label>'
+    : field('Custom exercise name', 'exerciseName', '', 'maxlength="80" required placeholder="Incline Dumbbell Press"');
+  return '<div class="routine-row"><div class="spread">' + exerciseField +
+    action('remove-row', '×', 'icon-button', 'aria-label="Remove exercise"') + '</div><div class="three-fields">' +
     field('Sets', 'sets', item.sets, 'type="number" min="1" max="99" required') +
     field('Min reps', 'min', item.min, 'type="number" min="1" max="999" required') +
     field('Max reps', 'max', item.max, 'type="number" min="1" max="999" required') + '</div></div>';
@@ -377,7 +380,8 @@ function routineEditor(routine, fromRecap = false) {
     field('Routine name', 'name', routine?.name ?? '', 'maxlength="60" required placeholder="Upper Body"') +
     field('Muscle groups', 'focus', routine?.focus ?? '', 'maxlength="100" placeholder="Chest · Back · Shoulders"') +
     '<div id="routine-rows">' + items.map(routineRow).join('') + '</div>' +
-    action('routine-row', icon('plus') + ' Add exercise', 'secondary') +
+    (state.exercises.length ? action('routine-row', icon('plus') + ' Add from library', 'secondary') : '') +
+    action('custom-routine-row', icon('plus') + ' Add custom exercise', 'secondary') +
     '<p class="form-error" role="alert"></p>' + submit('Save routine') +
     (routine ? action('delete-routine', 'Delete routine', 'danger', 'data-id="' + escape(routine.id) + '"') : '') + '</form>');
 }
@@ -552,6 +556,11 @@ const actions = {
     rows.insertAdjacentHTML('beforeend', routineRow(blankExercise(state.exercises[0].id)));
     rows.lastElementChild.querySelector('select').focus();
   },
+  'custom-routine-row'() {
+    const rows = dialog.querySelector('#routine-rows');
+    rows.insertAdjacentHTML('beforeend', routineRow(blankExercise(null)));
+    rows.lastElementChild.querySelector('[name=exerciseName]').focus();
+  },
   'remove-row':button => button.closest('.routine-row').remove(),
   'set-next'({ dataset }) {
     if (update(next => { next.nextId = dataset.id; })) render();
@@ -627,19 +636,31 @@ const forms = {
     const name = data.get('name').trim();
     const focus = data.get('focus').trim();
     const id = form.dataset.id || uid();
-    const items = [...form.querySelectorAll('.routine-row')].map(row => ({
-      exerciseId:row.querySelector('select').value,
+    const rows = [...form.querySelectorAll('.routine-row')].map(row => ({
+      exerciseId:row.querySelector('[name=exerciseId]')?.value,
+      exerciseName:row.querySelector('[name=exerciseName]')?.value.trim(),
       sets:Number(row.querySelector('[name=sets]').value),
       min:Number(row.querySelector('[name=min]').value),
       max:Number(row.querySelector('[name=max]').value),
     }));
     const error = form.querySelector('.form-error');
-    if (!name || !items.length || items.some(item => item.min > item.max)) {
-      error.textContent = !name ? 'Enter a routine name.' : !items.length ? 'Add at least one exercise.' :
-        'Max reps must be at least min reps.';
+    if (!name || !rows.length || rows.some(row => row.exerciseName === '' || row.min > row.max)) {
+      error.textContent = !name ? 'Enter a routine name.' : !rows.length ? 'Add at least one exercise.' :
+        rows.some(row => row.exerciseName === '') ? 'Enter a name for each custom exercise.' : 'Max reps must be at least min reps.';
       return;
     }
     if (!update(next => {
+      const items = rows.map(({ exerciseId, exerciseName, sets, min, max }) => {
+        if (exerciseName) {
+          let exercise = next.exercises.find(row => row.name.toLowerCase() === exerciseName.toLowerCase());
+          if (!exercise) {
+            exercise = { id:uid(), name:exerciseName, increment:2.5 };
+            next.exercises.push(exercise);
+          }
+          exerciseId = exercise.id;
+        }
+        return { exerciseId, sets, min, max };
+      });
       const index = next.routines.findIndex(routine => routine.id === id);
       const routine = { id, name, focus, items };
       if (index >= 0) next.routines[index] = routine;
