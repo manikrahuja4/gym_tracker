@@ -263,6 +263,9 @@ dialog .file-picker { position:relative; color:var(--ink); display:grid; text-al
 .logging .toast { bottom:125px; }
 .template-choice small { display:block; color:var(--muted); margin-top:3px; }
 dialog h3 { margin:0; font-size:.95rem; }
+.exercise-results { max-height:min(56vh, 450px); overflow-y:auto; padding:3px; align-content:start; }
+.exercise-results .button { justify-content:space-between; text-align:left; }
+.exercise-results .meta { flex-shrink:0; }
 @media (max-width:699px) {
   .log-dock { bottom:calc(56px + env(safe-area-inset-bottom)); }
   .logging .shell { padding-bottom:calc(185px + env(safe-area-inset-bottom)); }

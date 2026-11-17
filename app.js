@@ -1,7 +1,7 @@
 import {
   uid, dayKey, fromDay, initialState, blankExercise, startWorkout, historyFor, setDefaults,
   coach, moveNext, logSet, undoSet, finishWorkout, setCount, volume, rounded, validBackup,
-  addDefaultForearms, plannedItems, estimateWorkoutMinutes, editSet,
+  initializeLibrary, searchExercises, plannedItems, estimateWorkoutMinutes, editSet,
   workoutTemplates, addWorkoutTemplate, displayWeight, inputWeightInKg,
 } from './training.js';
 
@@ -52,7 +52,7 @@ try {
   if (saved) {
     const parsed = JSON.parse(saved);
     if (!validBackup(parsed)) throw new Error('Invalid training log');
-    state = addDefaultForearms(parsed);
+    state = initializeLibrary(parsed);
   }
 } catch {
   storageProblem = true;
@@ -85,7 +85,7 @@ function update(change, replace = false) {
     if (disk !== null && !replace) {
       const parsed = JSON.parse(disk);
       if (!validBackup(parsed)) throw new Error('Invalid training log');
-      addDefaultForearms(parsed);
+      initializeLibrary(parsed);
       if (JSON.stringify(parsed) !== JSON.stringify(state) && !storageProblem) {
         state = parsed;
         draft = null;
@@ -97,7 +97,7 @@ function update(change, replace = false) {
     }
     const next = structuredClone(state);
     change(next);
-    addDefaultForearms(next);
+    initializeLibrary(next);
     localStorage.setItem(storageKey, JSON.stringify(next));
     state = next;
     storageProblem = false;
@@ -372,7 +372,7 @@ function templates() {
   }).join('') + '</div>');
 }
 
-const options = selected => state.exercises.map(exercise => '<option value="' + escape(exercise.id) + '"' +
+const options = selected => searchExercises(state.exercises, '').map(exercise => '<option value="' + escape(exercise.id) + '"' +
   (exercise.id === selected ? ' selected' : '') + '>' + escape(exercise.name) + '</option>').join('');
 const field = (label, name, value, attrs = '') =>
   '<label>' + label + '<input name="' + name + '" value="' + escape(value) + '" ' + attrs + '></label>';
@@ -382,7 +382,7 @@ function pickExercise(mode) {
   openDialog(mode === 'swap' ? 'Swap exercise' : 'Add exercise', '<form data-form="pick" data-mode="' + mode + '">' +
     '<label for="exercise-search">Exercise name</label><input id="exercise-search" type="search" name="query" ' +
     'maxlength="80" autocomplete="off" placeholder="Search or type a new lift">' +
-    '<div id="exercise-results" class="dialog-list" aria-label="Matching exercises"></div></form>');
+    '<div id="exercise-results" class="dialog-list exercise-results" aria-label="Matching exercises"></div></form>');
   renderExerciseResults();
 }
 
@@ -390,11 +390,13 @@ function renderExerciseResults() {
   const input = dialog.querySelector('#exercise-search');
   const query = input.value.trim();
   const normal = query.toLowerCase();
-  const matches = state.exercises.filter(exercise => exercise.name.toLowerCase().includes(normal));
-  dialog.querySelector('#exercise-results').innerHTML = matches.slice(0, 8).map(exercise =>
+  const matches = searchExercises(state.exercises, query);
+  const results = dialog.querySelector('#exercise-results');
+  results.innerHTML = matches.map(exercise =>
     action('pick-lift', escape(exercise.name), 'secondary', 'data-id="' + escape(exercise.id) + '"')).join('') +
     (query && !matches.some(exercise => exercise.name.toLowerCase() === normal)
       ? submit('Create “' + escape(query) + '”') : '');
+  results.scrollTop = 0;
 }
 
 function selectWorkoutExercise(name, id, mode) {
@@ -456,10 +458,22 @@ function routineEditor(routine, fromRecap = false) {
 }
 
 function library() {
-  openDialog('Exercise library', '<div class="dialog-list">' + action('exercise-editor', icon('plus') + ' New exercise', 'primary') +
-    [...state.exercises].sort((a, b) => a.name.localeCompare(b.name)).map(exercise => action('exercise-editor',
+  openDialog('Exercise library', '<div class="dialog-list"><label>Search exercises' +
+    '<input id="library-search" type="search" autocomplete="off" placeholder="e.g. dumbbell row"></label>' +
+    action('exercise-editor', icon('plus') + ' New exercise', 'secondary') +
+    '<div id="library-results" class="dialog-list exercise-results" aria-label="Matching exercises"></div></div>');
+  renderLibraryResults();
+}
+
+function renderLibraryResults() {
+  const query = dialog.querySelector('#library-search').value;
+  const results = dialog.querySelector('#library-results');
+  const matches = searchExercises(state.exercises, query);
+  results.innerHTML = matches.length ? matches.map(exercise => action('exercise-editor',
       '<span>' + escape(exercise.name) + '</span><span class="meta">' + weightLabel(exercise.increment) + ' step</span>',
-      'secondary', 'data-id="' + escape(exercise.id) + '"')).join('') + '</div>');
+      'secondary', 'data-id="' + escape(exercise.id) + '"')).join('') :
+    '<p class="meta" role="status">No matching exercises.</p>';
+  results.scrollTop = 0;
 }
 
 function editExercise(id, mode) {
@@ -708,6 +722,7 @@ document.addEventListener('click', event => {
 document.addEventListener('input', event => {
   if (event.target.closest('#set-form') && event.target.matches('input')) updateDraft();
   else if (event.target.id === 'exercise-search') renderExerciseResults();
+  else if (event.target.id === 'library-search') renderLibraryResults();
 });
 
 document.addEventListener('change', event => {
@@ -855,7 +870,7 @@ window.addEventListener('storage', event => {
   try {
     const next = JSON.parse(event.newValue);
     if (!validBackup(next)) return;
-    state = addDefaultForearms(next);
+    state = initializeLibrary(next);
     draft = null;
     recap = null;
     storageProblem = false;

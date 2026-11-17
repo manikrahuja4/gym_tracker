@@ -18,6 +18,76 @@ const forearms = [
   ['default-wrist-rotation', 'Wrist Rotations', 1, 10, 15],
 ];
 
+const libraryExercises = [
+  'Dumbbell Bench Press', 'Incline Barbell Bench Press', 'Decline Bench Press', 'Close-Grip Bench Press',
+  'Machine Chest Press', 'Dumbbell Fly', 'Cable Fly', 'Push-Up', 'Chest Dip',
+  'Pull-Up', 'Chin-Up', 'Assisted Pull-Up', 'Neutral-Grip Lat Pulldown', 'Straight-Arm Pulldown',
+  'Barbell Row', 'Seated Cable Row', 'Chest-Supported Dumbbell Row', 'T-Bar Row', 'Machine Row',
+  'Dumbbell Shoulder Press', 'Barbell Overhead Press', 'Arnold Press', 'Cable Lateral Raise',
+  'Dumbbell Front Raise', 'Reverse Pec Deck Fly', 'Dumbbell Shrug',
+  'Barbell Curl', 'EZ-Bar Curl', 'Hammer Curl', 'Incline Dumbbell Curl', 'Preacher Curl', 'Cable Curl',
+  'Reverse Curl', 'Rope Triceps Pushdown', 'Overhead Cable Triceps Extension', 'Skull Crusher',
+  'Dumbbell Triceps Kickback', 'Triceps Dip', 'Farmer’s Carry', 'Dead Hang',
+  'Back Squat', 'Front Squat', 'Hack Squat', 'Smith Machine Squat', 'Bulgarian Split Squat',
+  'Walking Lunge', 'Reverse Lunge', 'Step-Up', 'Leg Extension', 'Seated Leg Curl', 'Lying Leg Curl',
+  'Conventional Deadlift', 'Sumo Deadlift', 'Trap Bar Deadlift', 'Barbell Romanian Deadlift',
+  'Barbell Hip Thrust', 'Glute Bridge', 'Cable Pull-Through', 'Back Extension',
+  'Hip Abduction', 'Hip Adduction', 'Seated Calf Raise', 'Leg Press Calf Raise',
+  'Cable Crunch', 'Hanging Leg Raise', 'Reverse Crunch', 'Ab Wheel Rollout', 'Pallof Press',
+  'Machine Ab Crunch', 'Bird Dog', 'Kneeling Cable Wood Chop',
+];
+
+const exerciseAliases = {
+  'bench press':['barbell bench press', 'flat bench press'],
+  'back squat':['squat', 'barbell squat'],
+  'conventional deadlift':['deadlift'],
+  'barbell romanian deadlift':['romanian deadlift', 'barbell rdl'],
+  'dumbbell romanian deadlift':['dumbbell rdl', 'db rdl'],
+  'barbell overhead press':['ohp', 'military press'],
+  'bulgarian split squat':['bss'],
+  'reverse pec deck fly':['rear delt machine'],
+};
+
+const exerciseWords = name => name.toLowerCase().replace(/['’]/g, '').replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ').trim();
+
+function matchingNames(name) {
+  const key = exerciseWords(name);
+  return [key, ...(exerciseAliases[key] ?? [])];
+}
+
+export function searchExercises(exercises, query) {
+  const normalized = exerciseWords(query).replace(/\bdb\b/g, 'dumbbell').replace(/\brdl\b/g, 'romanian deadlift');
+  const words = normalized ? normalized.split(' ') : [];
+  return exercises.map(exercise => {
+    const names = matchingNames(exercise.name);
+    const score = names.includes(normalized) ? 0 : names.some(name => name.startsWith(normalized)) ? 1 :
+      names.some(name => words.every(word => name.includes(word))) ? 2 : Infinity;
+    return { exercise, score };
+  }).filter(match => Number.isFinite(match.score))
+    .sort((a, b) => a.score - b.score || a.exercise.name.localeCompare(b.exercise.name))
+    .map(match => match.exercise);
+}
+
+export function initializeLibrary(state) {
+  addDefaultForearms(state);
+  const names = new Set(state.exercises.map(row => exerciseWords(row.name)));
+  const ids = new Set(state.exercises.map(row => row.id));
+  const defaults = [...workoutTemplates.flatMap(template => template.routines
+    .flatMap(([, , , rows]) => rows.map(([name, , , , alias]) => [name, 2.5, alias]))),
+    ...forearms.map(([, name]) => [name, 0.5]),
+    ...libraryExercises.map(name => [name, 2.5])];
+  for (const [name, increment, alias] of defaults) {
+    const key = exerciseWords(name);
+    const id = 'library-' + key.replaceAll(' ', '-');
+    if (ids.has(id) || matchingNames(name).some(candidate => names.has(candidate)) ||
+        (alias && names.has(exerciseWords(alias)))) continue;
+    state.exercises.push({ id, name, increment });
+    ids.add(id);
+    names.add(key);
+  }
+  return state;
+}
+
 export const workoutTemplates = [
   { id:'upper', name:'Upper-body split', description:'Chest & Triceps, Back & Biceps, Shoulders', routines:starter },
   { id:'full', name:'Full body', description:'One routine with a squat, push, pull, and hinge', routines:[
@@ -104,12 +174,8 @@ export function addDefaultForearms(state) {
 
 export function initialState({ empty = false } = {}) {
   const state = { version:1, exercises:[], routines:[], sessions:[], active:null, rest:90, nextId:null };
-  if (empty) {
-    for (const template of workoutTemplates) {
-      for (const [, , , rows] of template.routines) templateItems(state, rows);
-    }
-  } else addDefaultSplit(state);
-  return state;
+  if (!empty) addDefaultSplit(state);
+  return initializeLibrary(state);
 }
 
 export function plannedItems(state, routine, day = dayKey()) {

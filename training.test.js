@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState, startWorkout, logSet, undoSet, finishWorkout, setDefaults, coach, validBackup, addDefaultForearms, plannedItems, editSet } from './training.js';
-import { addWorkoutTemplate, displayWeight, inputWeightInKg } from './training.js';
+import { addWorkoutTemplate, displayWeight, inputWeightInKg, initializeLibrary, searchExercises } from './training.js';
 
 test('undo restores a just-completed exercise and its prior rest timer', () => {
   const state = initialState();
@@ -119,4 +119,20 @@ test('editing in pounds preserves the original weight if only reps changed', () 
   assert.equal(validBackup(state), true);
   state.unit = 'lb';
   assert.equal(validBackup(JSON.parse(JSON.stringify(state))), true);
+});
+
+test('library upgrades are repeatable and keep existing exercise names and IDs', () => {
+  const existing = { id:'custom-squat', name:'Barbell Squat', increment:5 };
+  const state = { version:1, exercises:[existing], routines:[], sessions:[], active:null, rest:90, nextId:null };
+  initializeLibrary(state);
+  const once = structuredClone(state);
+  initializeLibrary(state);
+  assert.deepEqual(state, once);
+  assert.equal(state.exercises[0], existing);
+  assert.ok(state.exercises.length >= 80);
+  assert.equal(state.exercises.some(row => row.name === 'Back Squat'), false);
+  assert.equal(searchExercises(state.exercises, 'DB RDL')[0].name, 'Dumbbell Romanian Deadlift');
+  assert.equal(searchExercises(state.exercises, 'overhead press')[0].name, 'Barbell Overhead Press');
+  assert.deepEqual(searchExercises(state.exercises, 'zzzz'), []);
+  assert.equal(validBackup(state), true);
 });
