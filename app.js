@@ -1,7 +1,8 @@
 import {
   uid, dayKey, fromDay, initialState, blankExercise, startWorkout, historyFor, setDefaults,
   coach, moveNext, logSet, undoSet, finishWorkout, setCount, volume, rounded, validBackup,
-  addDefaultSplit, hasDefaultSplit, addDefaultForearms, plannedItems, estimateWorkoutMinutes, editSet,
+  addDefaultForearms, plannedItems, estimateWorkoutMinutes, editSet,
+  workoutTemplates, addWorkoutTemplate, displayWeight, inputWeightInKg,
 } from './training.js';
 
 const storageKey = 'training-log-v1';
@@ -32,7 +33,11 @@ const pill = text => '<span class="pill">' + escape(text) + '</span>';
 const exerciseOf = id => state.exercises.find(exercise => exercise.id === id);
 const exerciseName = id => exerciseOf(id)?.name ?? 'Exercise';
 const dateSort = (a, b) => b.day.localeCompare(a.day) || b.ended - a.ended;
-const loadLabel = (weight, reps) => format.format(weight) + ' kg × ' + reps;
+const unit = () => state.unit ?? 'kg';
+const shownWeight = weight => displayWeight(weight, unit());
+const weightLabel = weight => format.format(shownWeight(weight)) + ' ' + unit();
+const loadLabel = (weight, reps) => weightLabel(weight) + ' × ' + reps;
+const weightStep = () => unit() === 'lb' ? 0.1 : 0.01;
 function durationLabel(items) {
   const minutes = estimateWorkoutMinutes(items, state.rest);
   if (!minutes) return '';
@@ -40,7 +45,7 @@ function durationLabel(items) {
   const remainder = minutes % 60;
   return hours ? '~' + hours + ' hr' + (remainder ? ' ' + remainder + ' min' : '') : '~' + minutes + ' min';
 }
-let state = initialState();
+let state = initialState({ empty:true });
 let storageProblem = false;
 try {
   const saved = localStorage.getItem(storageKey);
@@ -53,8 +58,10 @@ try {
   storageProblem = true;
 }
 let recap = null;
+let savedRecapRoutine;
 let selectedLift = '';
 let draft = null;
+let draftDefaultWeight;
 let toastTimeout;
 let installPrompt;
 let offlineReady = false;
@@ -106,7 +113,9 @@ function update(change, replace = false) {
 
 function route() {
   const screen = location.hash.slice(1);
-  return ['today', 'workout', 'progress', 'split'].includes(screen) ? screen : 'today';
+  if (screen === 'progress') return 'history';
+  if (screen === 'split') return 'routines';
+  return ['today', 'workout', 'history', 'routines'].includes(screen) ? screen : 'today';
 }
 
 function go(screen) {
@@ -146,28 +155,18 @@ function todayScreen() {
   const next = state.routines.find(routine => routine.id === state.nextId) ?? state.routines[0];
   const plan = active?.items ?? plannedItems(state, next);
   const estimate = durationLabel(plan);
-  const recent = [...state.sessions].sort(dateSort)[0];
   return '<header class="page-heading spread"><div><div class="eyebrow">' +
     escape(dateLabel(dayKey(), { weekday:'long', month:'long', day:'numeric' })) + '</div><h1>Today</h1></div>' +
     action('settings', icon('settings'), 'icon-button', 'aria-label="Settings and backup"') + '</header>' +
-    '<div class="dashboard"><section class="hero"><div class="plate" aria-hidden="true"></div><div class="hero-content">' +
-    '<div class="eyebrow"><span class="signal"></span>' + (active ? 'Workout in progress' : next ? 'Next in your split' : 'Your next workout') +
-    '</div><h2>' + escape(active?.name ?? next?.name ?? 'Freestyle') + '</h2><p>' +
-    escape(active ? setCount(active) + ' sets logged' : (next?.focus || plan.length + ' exercises')) + '</p>' +
-    (estimate ? '<p class="hero-estimate">' + estimate + ' total</p>' : '') +
-    action(active ? 'resume' : 'start', (active ? 'Resume workout' : 'Start workout') + icon('arrow'),
+    '<div class="today-layout"><section class="hero"><div class="plate" aria-hidden="true"></div><div class="hero-content">' +
+    (active || next ? '<div class="eyebrow">' + (active ? 'In progress' : 'Up next') + '</div>' : '') +
+    '<h2>' + escape(active?.name ?? next?.name ?? 'Ready to train?') + '</h2>' +
+    (active || next ? '<p>' + escape(active ? setCount(active) + ' sets logged' : plan.length + ' exercises') +
+      (estimate ? ' · ' + estimate + ' total' : '') + '</p>' : '') +
+    action(active ? 'resume' : 'start', (active ? 'Resume workout' : next ? 'Start workout' : 'Start empty workout') + icon('arrow'),
       'hero-button', next ? 'data-id="' + escape(next.id) + '"' : '') +
-    '</div></section>' + week() +
-    '<section class="panel plan"><div class="spread"><h2>On the plan</h2>' + pill(plan.length + ' exercises') + '</div>' +
-    (plan.length ? '<ol class="exercise-list">' + plan.map((item, i) => '<li><span class="ordinal">' + String(i + 1).padStart(2, '0') +
-      '</span><strong>' + escape(exerciseName(item.exerciseId)) + '</strong><span class="meta">' + item.sets + ' × ' + item.min + '–' + item.max + '</span></li>').join('') +
-      '</ol>' : '<p class="meta">Add exercises as you train.</p>') +
-    (!active ? action('choose', 'Choose workout', 'quiet') : '') + '</section>' +
-    '<section class="panel recent"><h2>Last session</h2>' + (recent ?
-      '<p><strong>' + escape(recent.name) + '</strong></p><p class="meta">' + escape(dateLabel(recent.day)) + ' · ' +
-      setCount(recent) + ' sets · ' + format.format(volume(recent)) + ' kg lifted</p>' +
-      '<a class="text-link" href="#progress">View training history ' + icon('arrow') + '</a>' :
-      '<p class="meta">Your first completed workout will appear here.</p>') + '</section></div>';
+    '</div></section>' + (!active ? action(next ? 'choose' : 'templates', next ? 'Choose another workout' : 'Use a template', 'secondary') : '') +
+    (state.sessions.length ? week() : '') + '</div>';
 }
 
 function recapScreen() {
@@ -181,17 +180,17 @@ function recapScreen() {
     const previousLoad = prior.logs.reduce((sum, set) => sum + set.weight * set.reps, 0);
     const difference = rounded(currentLoad - previousLoad);
     return difference > 0 ? ['<li><strong>' + escape(exerciseName(item.exerciseId)) + '</strong><span>+' +
-      format.format(difference) + ' kg volume</span></li>'] : [];
+      weightLabel(difference) + ' volume</span></li>'] : [];
   });
   return '<div class="work-layout"><section class="hero recap"><div class="plate" aria-hidden="true"></div><div class="hero-content">' +
     '<div class="eyebrow">Workout saved</div><h1>' + escape(recap.name) + '</h1><p>' + escape(dateLabel(recap.day)) + '</p></div></section>' +
     '<section class="panel summary"><div><span>Sets</span><strong>' + setCount(recap) +
     '</strong></div><div><span>Exercises</span><strong>' + recap.items.length +
-    '</strong></div><div><span>Kg lifted</span><strong>' + format.format(volume(recap)) + '</strong></div></section>' +
+    '</strong></div><div><span>' + unit() + ' lifted</span><strong>' + format.format(shownWeight(volume(recap))) + '</strong></div></section>' +
     (records.length ? '<section class="panel"><h2>Personal bests</h2><ul class="logged-list">' + records.join('') + '</ul></section>' : '') +
     (improvements.length ? '<section class="panel"><h2>More volume than last time</h2><ul class="logged-list">' + improvements.join('') + '</ul></section>' : '') +
     (next ? '<section class="panel spread"><span class="meta">Next in your split</span><strong>' + escape(next.name) + '</strong></section>' : '') +
-    (recap.routineId === null ? action('save-routine', 'Save as a routine') : '') +
+    (recap.routineId === null && savedRecapRoutine !== recap.id ? action('save-routine', 'Save as a routine') : '') +
     action('back-today', 'Back to Today ' + icon('arrow'), 'primary') + '</div>';
 }
 
@@ -208,11 +207,11 @@ function workoutScreen() {
   const common = '<header class="spread workout-heading"><div><div class="eyebrow">' + escape(workout.name) +
     '</div>' + (estimate ? '<div class="meta">' + estimate + ' total</div>' : '') +
     '</div>' + action('finish', count ? 'Finish' : 'Discard', 'quiet') + '</header>';
-  const queue = '<section class="panel"><div class="spread"><h2>Workout plan</h2>' +
+  const queue = '<section class="panel workout-queue"><div class="spread"><h2>Exercises</h2>' +
     action('add-exercise', icon('plus') + ' Add exercise', 'quiet') + '</div>' +
-    (workout.items.length ? '<ul class="exercise-list">' + workout.items.map((row, index) => '<li><span class="ordinal">' +
-      String(index + 1).padStart(2, '0') + '</span><strong>' + escape(exerciseName(row.exerciseId)) +
-      '</strong>' + action('jump', row.skipped ? 'Skipped' : row.logs.length + ' / ' + row.sets, 'quiet',
+    (workout.items.length ? '<ul class="exercise-list">' + workout.items.map((row, index) => '<li>' +
+      action('jump', '<strong>' + escape(exerciseName(row.exerciseId)) + '</strong><span class="meta">' +
+        (row.skipped ? 'Skipped' : row.logs.length + ' / ' + row.sets) + '</span>', 'quiet queue-row',
         'data-index="' + index + '" aria-label="Open ' + escape(exerciseName(row.exerciseId)) + '"') + '</li>').join('') + '</ul>' :
       '<p class="meta">Add an exercise to log your first set.</p>') + '</section>';
   const feedback = '<div class="rest-row"><div id="rest" role="timer"></div>' +
@@ -224,34 +223,35 @@ function workoutScreen() {
       action('add-exercise', icon('plus') + ' Add exercise', 'primary')) + '</section>' + (workout.items.length ? queue : '') + '</div>';
 
   const prior = setDefaults(state, item);
-  const target = coach(state, item);
+  const target = coach(state, item, weightLabel);
   const number = item.logs.length + 1;
-  if (!draft) draft = { weight:prior.weight, reps:prior.reps };
-  const increment = exerciseOf(item.exerciseId).increment || 2.5;
+  if (!draft) {
+    draftDefaultWeight = prior.weight;
+    draft = { weight:prior.weight, reps:prior.reps };
+  }
   return '<div class="work-layout">' + common + '<section class="panel logger">' +
-    '<div class="spread"><div class="eyebrow">Exercise ' + (workout.index + 1) + ' of ' + workout.items.length +
-    '</div>' + pill('Set ' + number + ' of ' + item.sets) + '</div><div class="segments" aria-hidden="true">' +
-    Array.from({ length:item.sets }, (_, i) => '<span class="' + (i < number ? 'filled' : '') + '"></span>').join('') + '</div>' +
-    '<h1>' + escape(exerciseName(item.exerciseId)) + '</h1><div class="previous spread"><span>Same set last time</span><strong>' +
-    (prior.last ? loadLabel(prior.last.weight, prior.last.reps) : 'First time for this set') + '</strong></div>' +
-    (target ? '<p class="coach">' + escape(target) + '</p>' : '<p class="coach">Target · ' + item.min + '–' + item.max + ' reps</p>') +
+    '<div class="spread"><div class="eyebrow">Set ' + number + ' of ' + item.sets + '</div>' +
+    '<details class="exercise-menu"><summary aria-label="Exercise options">⋯</summary><div>' +
+    (workout.items.length > 1 ? action('defer', 'Next exercise', 'quiet') : '') +
+    action('extra', 'Add a set', 'quiet') + action('swap', 'Swap exercise', 'quiet') +
+    action('skip', 'Skip exercise', 'quiet') + '</div></details></div>' +
+    '<h1>' + escape(exerciseName(item.exerciseId)) + '</h1><p class="meta">' +
+    (prior.last ? 'Last time · ' + loadLabel(prior.last.weight, prior.last.reps) : 'Target · ' + item.min + '–' + item.max + ' reps') + '</p>' +
+    (target && target.startsWith('You hit') ? '<p class="coach">' + escape(target) + '</p>' : '') +
     (item.oncePerWeek && exerciseName(item.exerciseId).toLowerCase() === 'wrist rotations'
       ? '<p class="meta">Reps in each direction, per arm.</p>' : '') +
-    '<form id="set-form"><div class="steppers">' + stepper('weight', 'Weight · kg', increment, 0, 9999, 0.01) +
-    stepper('reps', 'Reps', 1, 1, 999, 1) + '</div>' + feedback +
-    '<button type="submit" class="button primary log-button" id="log-label">Log ' + loadLabel(draft.weight, draft.reps) + icon('check') + '</button></form>' +
-    '<div class="work-actions">' + (workout.items.length > 1 ? action('defer', 'Next exercise', 'quiet') : '') +
-    action('skip', 'Skip', 'quiet') + action('swap', 'Swap', 'quiet') + action('extra', '+ Set', 'quiet') + '</div>' +
+    '<form id="set-form"><div class="steppers">' +
+    numberField('weight', 'Weight · ' + unit(), shownWeight(draft.weight), 0, shownWeight(9999), weightStep()) +
+    numberField('reps', 'Reps', draft.reps, 1, 999, 1) + '</div><div class="log-dock">' + feedback +
+    '<button type="submit" class="button primary log-button" id="log-label">Log ' + loadLabel(draft.weight, draft.reps) + icon('check') + '</button></div></form>' +
     (item.logs.length ? loggedSetList(workout, workout.index) : '') +
     '</section>' + queue + '</div>';
 }
 
-function stepper(field, label, step, min, max, precision) {
+function numberField(field, label, value, min, max, precision) {
   return '<div class="stepper"><label for="set-' + field + '">' + label + '</label><input type="number" inputmode="' +
     (field === 'weight' ? 'decimal' : 'numeric') + '" required id="set-' + field + '" name="' + field + '" min="' + min +
-    '" max="' + max + '" step="' + precision + '" value="' + draft[field] + '"><div class="step-buttons">' +
-    action('step', '−', 'step-button', 'aria-label="Decrease ' + field + '" data-field="' + field + '" data-delta="' + -step + '"') +
-    action('step', '+', 'step-button', 'aria-label="Increase ' + field + '" data-field="' + field + '" data-delta="' + step + '"') + '</div></div>';
+    '" max="' + max + '" step="' + precision + '" value="' + value + '"></div>';
 }
 
 function liftChart(rows) {
@@ -260,8 +260,8 @@ function liftChart(rows) {
   const max = Math.max(1, ...points);
   return '<div class="chart" aria-label="Heaviest set per workout">' + recent.map((row, index) =>
     '<button type="button" class="chart-column" data-action="show-chart-sets" data-index="' + (rows.length - recent.length + index) +
-    '" aria-label="' + escape(dateLabel(row.day)) + ', ' + format.format(points[index]) +
-    ' kg, view sets"><span>' + format.format(points[index]) + '</span><span class="chart-track">' +
+    '" aria-label="' + escape(dateLabel(row.day)) + ', ' + weightLabel(points[index]) +
+    ', view sets"><span>' + format.format(shownWeight(points[index])) + '</span><span class="chart-track">' +
     '<span class="chart-bar" style="height:' + Math.max(3, points[index] / max * 100) + '%"></span></span><small>' +
     escape(dateLabel(row.day)) + '</small></button>').join('') + '</div>';
 }
@@ -270,8 +270,8 @@ function loggedSetList(workout, exerciseIndex) {
   const item = workout.items[exerciseIndex];
   const name = exerciseName(item.exerciseId);
   return '<ol class="logged-list">' + item.logs.map((set, setIndex) =>
-    '<li><span>Set ' + (setIndex + 1) + '</span><strong>' + loadLabel(set.weight, set.reps) +
-    (set.record ? ' · PR' : '') + '</strong>' + action('edit-set', 'Edit', 'quiet',
+    '<li>' + action('edit-set', '<span>Set ' + (setIndex + 1) + '</span><strong>' + loadLabel(set.weight, set.reps) +
+    (set.record ? ' <span class="record-label">PR</span>' : '') + '</strong><span aria-hidden="true">Edit</span>', 'quiet set-row',
       'data-workout="' + escape(workout.id) + '" data-exercise="' + exerciseIndex + '" data-set="' + setIndex +
       '" aria-label="Edit ' + escape(name) + ' set ' + (setIndex + 1) + '"') + '</li>').join('') + '</ol>';
 }
@@ -281,31 +281,32 @@ function loggedDetails(session) {
     escape(exerciseName(item.exerciseId)) + '</h3>' + loggedSetList(session, index) + '</section>').join('');
 }
 
-function progressScreen() {
+function historyScreen() {
   const trained = state.exercises.filter(exercise => historyFor(state, exercise.id).length);
   if (!trained.some(exercise => exercise.id === selectedLift)) selectedLift = trained[0]?.id ?? '';
   const history = historyFor(state, selectedLift);
   const sessions = [...state.sessions].sort(dateSort);
-  return '<header class="page-heading"><h1>Progress</h1></header><div class="dashboard">' + week() +
-    '<section class="panel lifts"><div class="spread"><h2>Lift history</h2>' + (trained.length ?
-      '<select id="select-lift" aria-label="Choose lift">' + trained.map(exercise => '<option value="' + escape(exercise.id) + '"' +
-      (exercise.id === selectedLift ? ' selected' : '') + '>' + escape(exercise.name) + '</option>').join('') + '</select>' : '') +
-    '</div>' + (history.length ? '<p class="meta">Heaviest set · kg · Last ' + Math.min(10, history.length) + ' entries</p>' +
-      liftChart(history) + '<div class="history-rows">' + [...history].reverse().map(row =>
-      '<details data-lift-entry><summary><span>' + escape(dateLabel(row.day, { month:'short', day:'numeric', year:'numeric' })) + '</span>' +
-      '<span class="meta">' + row.logs.length + ' sets</span></summary><ol class="set-chips">' +
-      row.logs.map(set => '<li>' + loadLabel(set.weight, set.reps) + (set.record ? ' · PR' : '') + '</li>').join('') +
-      '</ol></details>').join('') + '</div>' : '<p class="meta">Log a workout to see your lifts here.</p>') + '</section>' +
-    '<section class="panel journal"><div class="spread"><h2>Training journal</h2>' + pill(sessions.length + ' workouts') + '</div>' +
+  const journal = '<section class="panel journal"><h2>Workouts</h2>' +
     (sessions.length ? '<div class="history-rows">' + sessions.map(session =>
       '<details data-session="' + escape(session.id) + '"><summary><div><strong>' + escape(session.name) + '</strong><span class="meta journal-date">' +
       escape(dateLabel(session.day, { month:'short', day:'numeric', year:'numeric' })) + '</span></div><span class="meta">' +
       setCount(session) + ' sets</span></summary>' + loggedDetails(session) +
-      '</details>').join('') + '</div>' : '<p class="meta">Completed sessions will appear here.</p>') + '</section></div>';
+      '</details>').join('') + '</div>' : '<p class="meta">Completed workouts will appear here.</p>') + '</section>';
+  if (!trained.length) return '<header class="page-heading"><h1>History</h1></header><div class="history-layout">' + journal + '</div>';
+  return '<header class="page-heading"><h1>History</h1></header><div class="history-layout">' + journal +
+    '<section class="panel lifts"><div class="spread"><h2>Lift progress</h2>' + (trained.length ?
+      '<select id="select-lift" aria-label="Choose lift">' + trained.map(exercise => '<option value="' + escape(exercise.id) + '"' +
+      (exercise.id === selectedLift ? ' selected' : '') + '>' + escape(exercise.name) + '</option>').join('') + '</select>' : '') +
+    '</div>' + (history.length ? '<p class="meta">Heaviest set · ' + unit() + ' · Last ' + Math.min(10, history.length) + ' entries</p>' +
+      liftChart(history) + '<div class="history-rows">' + [...history].reverse().map(row =>
+      '<details data-lift-entry><summary><span>' + escape(dateLabel(row.day, { month:'short', day:'numeric', year:'numeric' })) + '</span>' +
+      '<span class="meta">' + row.logs.length + ' sets</span></summary><ol class="set-chips">' +
+      row.logs.map(set => '<li>' + loadLabel(set.weight, set.reps) + (set.record ? ' · PR' : '') + '</li>').join('') +
+      '</ol></details>').join('') + '</div>' : '') + '</section></div>';
 }
 
-function splitScreen() {
-  return '<header class="page-heading spread"><div><div class="eyebrow">Rolling schedule</div><h1>Your split</h1></div>' +
+function routinesScreen() {
+  return '<header class="page-heading spread"><h1>Routines</h1>' +
     action('new-routine', icon('plus') + ' New routine', 'primary') + '</header><div class="split-grid">' +
     (state.routines.length ? state.routines.map((routine, index) => {
       const id = 'data-id="' + escape(routine.id) + '"';
@@ -320,9 +321,7 @@ function splitScreen() {
         action('move-routine', '→', 'quiet', id + ' data-delta="1" aria-label="Move later"' + (index === state.routines.length - 1 ? ' disabled' : '')) +
         '</div></div></section>';
     }).join('') : '<div class="panel"><p class="meta">Add a routine to start your split.</p></div>') + '</div>' +
-    (!hasDefaultSplit(state) ? '<section class="panel library"><div class="spread"><div><h2>Upper-body split</h2>' +
-      '<p class="meta">Chest &amp; Triceps · Back &amp; Biceps · Shoulders</p></div>' +
-      action('add-default-split', 'Add split', 'secondary') + '</div></section>' : '') +
+    '<div class="library">' + action('templates', 'Browse templates', 'secondary') + '</div>' +
     '<section class="panel library"><div class="spread"><h2>Exercise library</h2>' +
     action('exercise-editor', icon('plus') + ' New exercise', 'secondary') + '</div><p class="meta">' + state.exercises.length +
     ' exercises · Customize weight increments</p>' + action('library', 'Manage exercises', 'quiet') + '</section>';
@@ -330,9 +329,11 @@ function splitScreen() {
 
 function render() {
   const screen = route();
-  nav.innerHTML = [['today', 'Today'], ['workout', 'Workout'], ['progress', 'Progress'], ['split', 'Split']].map(([id, label]) =>
-    '<a href="#' + id + '"' + (id === screen ? ' aria-current="page"' : '') + '>' + icon(id) + '<span>' + label + '</span></a>').join('');
-  app.innerHTML = ({ today:todayScreen, workout:workoutScreen, progress:progressScreen, split:splitScreen })[screen]();
+  nav.hidden = screen === 'workout';
+  nav.innerHTML = [['today', 'Today', 'today'], ['history', 'History', 'progress'], ['routines', 'Routines', 'split']].map(([id, label, glyph]) =>
+    '<a href="#' + id + '"' + (id === screen ? ' aria-current="page"' : '') + '>' + icon(glyph) + '<span>' + label + '</span></a>').join('');
+  app.innerHTML = ({ today:todayScreen, workout:workoutScreen, history:historyScreen, routines:routinesScreen })[screen]();
+  document.body.classList.toggle('logging', Boolean(app.querySelector('.log-dock')));
   tick();
 }
 
@@ -341,7 +342,7 @@ function tick() {
   if (!node) return;
   const seconds = Math.ceil(((state.active?.restUntil ?? 0) - Date.now()) / 1000);
   const text = seconds > 0 ? 'Rest ' + Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0') :
-    state.active?.restUntil && state.rest ? 'Rest complete' : 'Rest timer ready';
+    state.active?.restUntil && state.rest ? 'Rest complete' : '';
   if (node.textContent !== text) node.textContent = text;
 }
 
@@ -351,13 +352,24 @@ function openDialog(title, body) {
   dialog.querySelector('h2').id = 'dialog-title';
   dialog.setAttribute('aria-labelledby', 'dialog-title');
   if (!dialog.open) dialog.showModal();
-  dialog.querySelector('input, select, .primary, button')?.focus();
+  (dialog.querySelector('[autofocus], input:not([type=file]), select') ?? dialog.querySelector('.primary, button'))?.focus();
 }
 
 function chooseWorkout() {
   openDialog('Choose workout', '<div class="dialog-list">' + state.routines.map(routine =>
-    action('start', '<span>' + escape(routine.name) + '</span>' + icon('arrow'), 'secondary',
-      'data-id="' + escape(routine.id) + '"')).join('') + action('start', 'Freestyle ' + icon('plus'), 'primary') + '</div>');
+    action('start', '<span>' + escape(routine.name) + '</span><span class="meta">' +
+      durationLabel(plannedItems(state, routine)) + '</span>', 'secondary',
+      'data-id="' + escape(routine.id) + '"')).join('') + action('start', 'Start empty workout ' + icon('plus'), 'primary') +
+      action('templates', 'Browse templates', 'quiet') + '</div>');
+}
+
+function templates() {
+  openDialog('Workout templates', '<div class="dialog-list">' + workoutTemplates.map(template => {
+    const installed = template.routines.every(([id]) => state.routines.some(routine => routine.id === id));
+    return action('use-template', '<span><strong>' + escape(template.name) + '</strong><small>' +
+      escape(template.description) + '</small></span><span>' + (installed ? 'Added' : icon('plus')) + '</span>',
+      'secondary template-choice', 'data-id="' + template.id + '"' + (installed ? ' disabled' : ''));
+  }).join('') + '</div>');
 }
 
 const options = selected => state.exercises.map(exercise => '<option value="' + escape(exercise.id) + '"' +
@@ -368,9 +380,37 @@ const submit = label => '<button type="submit" class="button primary">' + label 
 
 function pickExercise(mode) {
   openDialog(mode === 'swap' ? 'Swap exercise' : 'Add exercise', '<form data-form="pick" data-mode="' + mode + '">' +
-    (state.exercises.length ? '<label>Exercise<select name="exerciseId">' + options() + '</select></label>' +
-    submit(mode === 'swap' ? 'Swap exercise' : 'Add to workout') : '') +
-    action('exercise-editor', 'Create an exercise', 'secondary', 'data-mode="' + mode + '"') + '</form>');
+    '<label for="exercise-search">Exercise name</label><input id="exercise-search" type="search" name="query" ' +
+    'maxlength="80" autocomplete="off" placeholder="Search or type a new lift">' +
+    '<div id="exercise-results" class="dialog-list" aria-label="Matching exercises"></div></form>');
+  renderExerciseResults();
+}
+
+function renderExerciseResults() {
+  const input = dialog.querySelector('#exercise-search');
+  const query = input.value.trim();
+  const normal = query.toLowerCase();
+  const matches = state.exercises.filter(exercise => exercise.name.toLowerCase().includes(normal));
+  dialog.querySelector('#exercise-results').innerHTML = matches.slice(0, 8).map(exercise =>
+    action('pick-lift', escape(exercise.name), 'secondary', 'data-id="' + escape(exercise.id) + '"')).join('') +
+    (query && !matches.some(exercise => exercise.name.toLowerCase() === normal)
+      ? submit('Create “' + escape(query) + '”') : '');
+}
+
+function selectWorkoutExercise(name, id, mode) {
+  if (!state.active || (!id && !name)) return;
+  if (!update(next => {
+    let exercise = id ? next.exercises.find(row => row.id === id) :
+      next.exercises.find(row => row.name.toLowerCase() === name.toLowerCase());
+    if (!exercise) {
+      exercise = { id:uid(), name, increment:2.5 };
+      next.exercises.push(exercise);
+    }
+    addToWorkout(next, exercise.id, mode);
+  })) return;
+  dialog.close();
+  refreshWorkout();
+  window.scrollTo(0, 0);
 }
 
 function addToWorkout(next, exerciseId, mode) {
@@ -418,7 +458,7 @@ function routineEditor(routine, fromRecap = false) {
 function library() {
   openDialog('Exercise library', '<div class="dialog-list">' + action('exercise-editor', icon('plus') + ' New exercise', 'primary') +
     [...state.exercises].sort((a, b) => a.name.localeCompare(b.name)).map(exercise => action('exercise-editor',
-      '<span>' + escape(exercise.name) + '</span><span class="meta">' + format.format(exercise.increment) + ' kg step</span>',
+      '<span>' + escape(exercise.name) + '</span><span class="meta">' + weightLabel(exercise.increment) + ' step</span>',
       'secondary', 'data-id="' + escape(exercise.id) + '"')).join('') + '</div>');
 }
 
@@ -426,16 +466,19 @@ function editExercise(id, mode) {
   const exercise = exerciseOf(id);
   openDialog(exercise ? 'Edit exercise' : 'New exercise', '<form data-form="exercise" data-id="' + escape(id) +
     '" data-mode="' + escape(mode) + '">' + field('Exercise name', 'name', exercise?.name ?? '', 'maxlength="80" required') +
-    field('Weight increment · kg', 'increment', exercise?.increment ?? 2.5, 'type="number" min="0" max="100" step="0.01" required') +
+    field('Weight increment · ' + unit(), 'increment', shownWeight(exercise?.increment ?? 2.5),
+      'type="number" inputmode="decimal" min="0" max="' + shownWeight(100) + '" step="' + weightStep() + '" required') +
     '<p class="meta">Use 0 to turn off weight increase suggestions for this lift.</p><p class="form-error" role="alert"></p>' +
     submit(mode ? 'Create and add' : 'Save exercise') + '</form>');
 }
 
 function settings() {
   openDialog('Settings', '<form data-form="settings">' +
+    '<label>Weight unit<select name="unit"><option value="kg">Kilograms (kg)</option><option value="lb"' +
+    (unit() === 'lb' ? ' selected' : '') + '>Pounds (lb)</option></select></label>' +
     field('Rest timer · seconds', 'rest', state.rest, 'type="number" min="0" max="600" required') +
-    '<p class="meta">Use 0 to turn off the timer.</p>' + submit('Save settings') +
-    '</form><hr><div class="dialog-list">' +
+    submit('Save settings') + '</form><hr><div class="dialog-list"><h3>Backups</h3>' +
+    '<p class="meta">Workouts are saved in this browser. Export a backup to keep a copy or move to another device.</p>' +
     action('export', 'Export backup', 'secondary') +
     '<label class="file-picker">Restore backup<input id="restore-file" type="file" accept=".json,application/json"></label>' +
     (installPrompt ? action('install', 'Install app', 'secondary') : '') + '</div>');
@@ -483,26 +526,28 @@ function workoutChange(change) {
   if (update(next => change(next.active))) refreshWorkout();
 }
 
-function stepValue(button) {
-  const field = button.dataset.field;
-  const input = document.querySelector('#set-' + field);
-  const value = Number.isFinite(input.valueAsNumber) ? input.valueAsNumber : Number(input.min);
-  input.value = Math.max(Number(input.min), Math.min(Number(input.max), rounded(value + Number(button.dataset.delta))));
-  updateDraft();
-}
-
 function updateDraft() {
   const form = document.querySelector('#set-form');
   if (!form) return;
   const { weight, reps } = form.elements;
   const valid = weight.validity.valid && reps.validity.valid;
-  if (weight.validity.valid) draft.weight = weight.valueAsNumber;
+  if (weight.validity.valid) draft.weight = inputWeightInKg(weight.valueAsNumber, unit(), draftDefaultWeight);
   if (reps.validity.valid) draft.reps = reps.valueAsNumber;
   form.querySelector('#log-label').innerHTML = (valid ? 'Log ' + loadLabel(draft.weight, draft.reps) : 'Log set') + icon('check');
 }
 
 const actions = {
-  settings, library, choose:chooseWorkout,
+  settings, library, templates, choose:chooseWorkout,
+  'use-template'({ dataset }) {
+    if (!update(next => addWorkoutTemplate(next, dataset.id))) return;
+    dialog.close();
+    render();
+    notify('Template added to Routines');
+  },
+  'pick-lift'({ dataset }) {
+    const exercise = exerciseOf(dataset.id);
+    if (exercise) selectWorkoutExercise(exercise.name, exercise.id, dialog.querySelector('[data-form="pick"]').dataset.mode);
+  },
   start({ dataset }) {
     const id = dataset.id;
     if (!update(next => startWorkout(next, next.routines.find(routine => routine.id === id)))) return;
@@ -510,6 +555,7 @@ const actions = {
     draft = null;
     dialog.close();
     go('workout');
+    if (!state.active.items.length) pickExercise('add');
   },
   resume:() => go('workout'),
   'back-today':() => go('today'),
@@ -521,7 +567,6 @@ const actions = {
     row.querySelector('summary').focus({ preventScroll:true });
   },
   close:() => dialog.close(),
-  step:stepValue,
   'edit-set'({ dataset }) {
     const { workout:workoutId, exercise, set } = dataset;
     const workout = state.active?.id === workoutId ? state.active : state.sessions.find(row => row.id === workoutId);
@@ -531,7 +576,8 @@ const actions = {
     openDialog('Edit set ' + (Number(set) + 1), '<form data-form="edit-set" data-workout="' + escape(workoutId) +
       '" data-exercise="' + Number(exercise) + '" data-set="' + Number(set) + '"><p class="meta">' +
       escape(exerciseName(item.exerciseId)) + '</p>' +
-      field('Weight · kg', 'weight', logged.weight, 'type="number" inputmode="decimal" min="0" max="9999" step="0.01" required') +
+      field('Weight · ' + unit(), 'weight', shownWeight(logged.weight),
+        'type="number" inputmode="decimal" min="0" max="' + shownWeight(9999) + '" step="' + weightStep() + '" required') +
       field('Reps', 'reps', logged.reps, 'type="number" inputmode="numeric" min="1" max="999" step="1" required') +
       submit('Save changes') + '</form>');
   },
@@ -594,11 +640,6 @@ const actions = {
     go('today');
   },
   'new-routine':() => routineEditor(),
-  'add-default-split'() {
-    if (!update(addDefaultSplit)) return;
-    render();
-    notify('Upper-body routines added');
-  },
   'save-routine':() => routineEditor(null, true),
   'edit-routine':({ dataset }) => routineEditor(state.routines.find(routine => routine.id === dataset.id)),
   'routine-row'() {
@@ -642,7 +683,7 @@ const actions = {
   'exercise-editor':({ dataset }) => editExercise(dataset.id, dataset.mode),
   export:exportBackup,
   restore() {
-    if (!importState || !update(next => Object.assign(next, importState), true)) return;
+    if (!importState || !update(next => Object.assign(next, { unit:'kg' }, importState), true)) return;
     importState = null;
     recap = null;
     draft = null;
@@ -666,6 +707,7 @@ document.addEventListener('click', event => {
 
 document.addEventListener('input', event => {
   if (event.target.closest('#set-form') && event.target.matches('input')) updateDraft();
+  else if (event.target.id === 'exercise-search') renderExerciseResults();
 });
 
 document.addEventListener('change', event => {
@@ -684,7 +726,10 @@ const forms = {
     const { workout:workoutId, exercise, set } = form.dataset;
     let edited = false;
     if (!update(next => {
-      edited = editSet(next, workoutId, Number(exercise), Number(set), Number(data.get('weight')), Number(data.get('reps')));
+      const workout = next.active?.id === workoutId ? next.active : next.sessions.find(row => row.id === workoutId);
+      const prior = workout?.items[Number(exercise)]?.logs[Number(set)]?.weight;
+      edited = editSet(next, workoutId, Number(exercise), Number(set),
+        inputWeightInKg(Number(data.get('weight')), unit(), prior), Number(data.get('reps')));
     }) || !edited) return;
     if (recap) recap = state.sessions.find(row => row.id === recap.id) ?? null;
     dialog.close();
@@ -701,10 +746,8 @@ const forms = {
     notify('Set updated');
   },
   pick(form, data) {
-    if (!state.active || !exerciseOf(data.get('exerciseId'))) return;
-    if (!update(next => addToWorkout(next, data.get('exerciseId'), form.dataset.mode))) return;
-    dialog.close();
-    refreshWorkout();
+    const name = data.get('query').trim();
+    selectWorkoutExercise(name, null, form.dataset.mode);
   },
   routine(form, data) {
     const name = data.get('name').trim();
@@ -743,6 +786,7 @@ const forms = {
       else next.routines.push(routine);
       next.nextId ??= id;
     })) return;
+    if (recap && route() === 'workout' && !form.dataset.id) savedRecapRoutine = recap.id;
     dialog.close();
     render();
     notify('Routine saved');
@@ -756,8 +800,10 @@ const forms = {
       return;
     }
     if (!update(next => {
-      const exercise = { id, name, increment:Number(data.get('increment')) };
       const index = next.exercises.findIndex(row => row.id === id);
+      const prior = next.exercises[index]?.increment ?? 2.5;
+      const increment = Math.min(100, inputWeightInKg(Number(data.get('increment')), unit(), prior));
+      const exercise = { id, name, increment };
       if (index >= 0) next.exercises[index] = exercise;
       else next.exercises.push(exercise);
       if (mode && next.active) addToWorkout(next, id, mode);
@@ -768,7 +814,10 @@ const forms = {
     notify('Exercise saved');
   },
   settings(form, data) {
-    if (!update(next => { next.rest = Number(data.get('rest')); })) return;
+    if (!update(next => {
+      next.rest = Number(data.get('rest'));
+      next.unit = data.get('unit');
+    })) return;
     dialog.close();
     render();
     notify('Settings saved');
@@ -784,12 +833,14 @@ document.addEventListener('submit', event => {
     return;
   }
   let saved;
-  if (!update(next => { saved = logSet(next, Number(data.get('weight')), Number(data.get('reps'))); }) || !saved) return;
+  if (!update(next => {
+    saved = logSet(next, inputWeightInKg(Number(data.get('weight')), unit(), draftDefaultWeight), Number(data.get('reps')));
+  }) || !saved) return;
   refreshWorkout();
   if (saved.record) {
     navigator.vibrate?.(35);
     notify('New personal best · ' + loadLabel(saved.weight, saved.reps));
-  } else notify('Set logged · ' + loadLabel(saved.weight, saved.reps));
+  }
   document.querySelector('#log-label')?.focus({ preventScroll:true });
 });
 

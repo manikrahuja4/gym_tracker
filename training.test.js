@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState, startWorkout, logSet, undoSet, finishWorkout, setDefaults, coach, validBackup, addDefaultForearms, plannedItems, editSet } from './training.js';
+import { addWorkoutTemplate, displayWeight, inputWeightInKg } from './training.js';
 
 test('undo restores a just-completed exercise and its prior rest timer', () => {
   const state = initialState();
@@ -89,4 +90,33 @@ test('editing an earlier set keeps later sets and corrects personal bests', () =
   assert.equal(validBackup(state), true);
   const next = startWorkout(state, state.routines[0], '2026-11-17', 5000);
   assert.equal(setDefaults(state, next.items[0]).reps, 9);
+});
+
+test('new users can train without a routine and add a template without replacing their log', () => {
+  const state = initialState({ empty:true });
+  assert.deepEqual(state.routines, []);
+  const exercise = state.exercises.find(row => row.name === 'Bench Press');
+  const workout = startWorkout(state, null, '2026-11-17', 1000);
+  workout.items.push({ exerciseId:exercise.id, sets:1, min:8, max:12, logs:[] });
+  logSet(state, 60, 8, 2000);
+  const session = finishWorkout(state, 3000);
+  addWorkoutTemplate(state, 'full');
+  addWorkoutTemplate(state, 'full');
+  assert.equal(state.routines.length, 1);
+  assert.equal(state.routines[0].items[1].exerciseId, exercise.id);
+  assert.equal(state.sessions[0], session);
+  assert.equal(validBackup(state), true);
+});
+
+test('editing in pounds preserves the original weight if only reps changed', () => {
+  const original = 59.99;
+  const pounds = displayWeight(original, 'lb');
+  assert.equal(inputWeightInKg(pounds, 'lb', original), original);
+  const updated = inputWeightInKg(135, 'lb', original);
+  assert.equal(updated, 61.23);
+  assert.equal(displayWeight(updated, 'lb'), 135);
+  const state = initialState();
+  assert.equal(validBackup(state), true);
+  state.unit = 'lb';
+  assert.equal(validBackup(JSON.parse(JSON.stringify(state))), true);
 });

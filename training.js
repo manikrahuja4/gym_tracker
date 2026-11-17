@@ -18,6 +18,31 @@ const forearms = [
   ['default-wrist-rotation', 'Wrist Rotations', 1, 10, 15],
 ];
 
+export const workoutTemplates = [
+  { id:'upper', name:'Upper-body split', description:'Chest & Triceps, Back & Biceps, Shoulders', routines:starter },
+  { id:'full', name:'Full body', description:'One routine with a squat, push, pull, and hinge', routines:[
+    ['template-full-body', 'Full Body', 'Full body', [
+      ['Goblet Squat', 3, 8, 12], ['Bench Press', 3, 8, 12],
+      ['Lat Pulldown', 3, 8, 12], ['Dumbbell Romanian Deadlift', 3, 8, 12],
+    ]],
+  ] },
+  { id:'alternating', name:'Upper / Lower', description:'Two routines that alternate', routines:[
+    ['template-upper', 'Upper Body', 'Upper body', [
+      ['Bench Press', 3, 8, 12], ['Single-Arm Dumbbell Row', 3, 8, 12],
+      ['Shoulder Press', 3, 8, 12], ['Lat Pulldown', 3, 8, 12],
+    ]],
+    ['template-lower', 'Lower Body', 'Lower body', [
+      ['Goblet Squat', 3, 8, 12], ['Dumbbell Romanian Deadlift', 3, 8, 12],
+      ['Leg Press', 3, 10, 15], ['Standing Calf Raise', 3, 12, 20],
+    ]],
+  ] },
+];
+
+const kgPerPound = 0.45359237;
+export const displayWeight = (kg, unit) => unit === 'lb' ? Math.round(kg / kgPerPound * 10) / 10 : kg;
+export const inputWeightInKg = (weight, unit, prior) => weight === displayWeight(prior, unit) ? prior :
+  rounded(unit === 'lb' ? weight * kgPerPound : weight);
+
 export const uid = () => globalThis.crypto?.randomUUID?.() ??
   Date.now().toString(36) + Math.random().toString(36).slice(2);
 export const dayKey = (date = new Date()) =>
@@ -29,22 +54,31 @@ export function hasDefaultSplit(state) {
   return starter.every(([id]) => state.routines.some(routine => routine.id === id));
 }
 
-export function addDefaultSplit(state) {
-  for (const [id, name, focus, rows] of starter) {
+function templateItems(state, rows) {
+  return rows.map(([exerciseName, sets, min, max, legacyName]) => {
+    const names = [exerciseName, legacyName].filter(Boolean).map(value => value.toLowerCase());
+    let exercise = state.exercises.find(row => names.includes(row.name.toLowerCase()));
+    if (!exercise) {
+      exercise = { id:uid(), name:exerciseName, increment:2.5 };
+      state.exercises.push(exercise);
+    }
+    return { exerciseId:exercise.id, sets, min, max };
+  });
+}
+
+export function addWorkoutTemplate(state, templateId) {
+  const template = workoutTemplates.find(row => row.id === templateId);
+  if (!template) return;
+  for (const [id, name, focus, rows] of template.routines) {
     if (state.routines.some(routine => routine.id === id)) continue;
-    const items = rows.map(([exerciseName, sets, min, max, legacyName]) => {
-      const names = [exerciseName, legacyName].filter(Boolean).map(value => value.toLowerCase());
-      let exercise = state.exercises.find(row => names.includes(row.name.toLowerCase()));
-      if (!exercise) {
-        exercise = { id:uid(), name:exerciseName, increment:2.5 };
-        state.exercises.push(exercise);
-      }
-      return { exerciseId:exercise.id, sets, min, max };
-    });
-    state.routines.push({ id, name, focus, items });
+    state.routines.push({ id, name, focus, items:templateItems(state, rows) });
     state.nextId ??= id;
   }
   addDefaultForearms(state);
+}
+
+export function addDefaultSplit(state) {
+  addWorkoutTemplate(state, 'upper');
 }
 
 export function addDefaultForearms(state) {
@@ -68,9 +102,13 @@ export function addDefaultForearms(state) {
   return state;
 }
 
-export function initialState() {
+export function initialState({ empty = false } = {}) {
   const state = { version:1, exercises:[], routines:[], sessions:[], active:null, rest:90, nextId:null };
-  addDefaultSplit(state);
+  if (empty) {
+    for (const template of workoutTemplates) {
+      for (const [, , , rows] of template.routines) templateItems(state, rows);
+    }
+  } else addDefaultSplit(state);
   return state;
 }
 
@@ -115,14 +153,14 @@ export function setDefaults(state, item) {
   return { weight:set?.weight ?? fallback?.weight ?? 0, reps:set?.reps ?? item.min, last:set };
 }
 
-export function coach(state, item) {
+export function coach(state, item, weightLabel = weight => weight + ' kg') {
   const logs = historyFor(state, item.exerciseId).at(-1)?.logs;
   if (!logs?.length) return '';
   const weight = logs[0].weight;
   const increment = state.exercises.find(exercise => exercise.id === item.exerciseId)?.increment ?? 0;
   if (weight > 0 && increment > 0 && logs.length >= item.sets &&
       logs.slice(0, item.sets).every(set => set.weight === weight && set.reps >= item.max)) {
-    return 'You hit ' + item.max + ' across ' + item.sets + ' sets. Try ' + rounded(weight + increment) + ' kg today.';
+    return 'You hit ' + item.max + ' across ' + item.sets + ' sets. Try ' + weightLabel(rounded(weight + increment)) + ' today.';
   }
   return 'Aim for ' + item.min + '–' + item.max + ' reps. Match or beat your last session.';
 }
@@ -210,6 +248,7 @@ export function validBackup(state) {
   const list = (value, validate) => Array.isArray(value) && value.every(validate);
   const uniqueIds = rows => new Set(rows.map(row => row.id)).size === rows.length;
   if (state?.version !== 1 || !integer(state.rest, 0, 600) ||
+      (state.unit !== undefined && state.unit !== 'kg' && state.unit !== 'lb') ||
       !list(state.exercises, exercise => exercise && string(exercise.id) && string(exercise.name) &&
         number(exercise.increment, 0, 100)) || !uniqueIds(state.exercises)) return false;
   const ids = new Set(state.exercises.map(exercise => exercise.id));
