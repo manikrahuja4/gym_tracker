@@ -310,7 +310,7 @@ export function workoutExportText(state, session) {
 
   const sessions = [...state.sessions].sort((a, b) => a.day.localeCompare(b.day) || a.started - b.started);
   if (state.active && setCount(state.active)) sessions.push(state.active);
-  const sections = ['Training Log', 'Weight unit: ' + unit, ...sessions.map(exportSession)];
+  const sections = ['Reptrack', 'Weight unit: ' + unit, ...sessions.map(exportSession)];
   if (state.routines.length) {
     const routines = state.routines.map(routine => {
       const name = routine.name + (routine.focus ? ' · ' + routine.focus : '');

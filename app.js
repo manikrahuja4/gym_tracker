@@ -11,6 +11,7 @@ const nav = document.querySelector('#nav');
 const dialog = document.querySelector('#dialog');
 const toast = document.querySelector('#toast');
 const connection = document.querySelector('#connection');
+const android = window.Capacitor?.getPlatform() === 'android' ? window.Capacitor.Plugins : null;
 const format = new Intl.NumberFormat(undefined, { maximumFractionDigits:2 });
 const dateLabel = (day, opts = { month:'short', day:'numeric' }) =>
   fromDay(day).toLocaleDateString(undefined, opts);
@@ -65,7 +66,7 @@ let draft = null;
 let draftDefaultWeight;
 let toastTimeout;
 let installPrompt;
-let offlineReady = false;
+let offlineReady = Boolean(android);
 let workerFailed = false;
 
 function notify(message) {
@@ -497,18 +498,34 @@ function settings() {
     (unit() === 'lb' ? ' selected' : '') + '>Pounds (lb)</option></select></label>' +
     field('Rest timer · seconds', 'rest', state.rest, 'type="number" min="0" max="600" required') +
     submit('Save settings') + '</form><hr><div class="dialog-list"><h3>Export and backup</h3>' +
-    '<p class="meta">Workouts are saved in this browser. Export a backup to keep a copy or move to another device.</p>' +
+    '<p class="meta">Workouts are saved ' + (android ? 'on this device' : 'in this browser') +
+    '. Export a backup to keep a copy or move to another device.</p>' +
     action('export-history', 'Export all workout data', 'secondary') +
-    action('export', 'Download restore backup (.json)', 'secondary') +
+    action('export', android ? 'Share restore backup (.json)' : 'Download restore backup (.json)', 'secondary') +
     '<label class="file-picker">Restore backup<input id="restore-file" type="file" accept=".json,application/json"></label>' +
     (installPrompt ? action('install', 'Install app', 'secondary') : '') + '</div>');
 }
 
 function exportBackup() {
-  downloadExport('training-log-' + dayKey() + '.json', JSON.stringify(state, null, 2), 'application/json');
+  return downloadExport('reptrack-' + dayKey() + '.json', JSON.stringify(state, null, 2), 'application/json');
 }
 
-function downloadExport(filename, contents, type) {
+async function shareAndroidFile(filename, contents) {
+  const { uri } = await android.Filesystem.writeFile({
+    path:'exports/' + filename, data:contents, directory:'CACHE', encoding:'utf8', recursive:true,
+  });
+  await android.Share.share({ title:filename, files:[uri] });
+}
+
+async function downloadExport(filename, contents, type) {
+  if (android) {
+    try {
+      await shareAndroidFile(filename, contents);
+    } catch {
+      notify('File sharing ended. You can try again or copy the export text.');
+    }
+    return;
+  }
   const url = URL.createObjectURL(new Blob([contents], { type }));
   const link = document.createElement('a');
   link.href = url;
@@ -522,15 +539,16 @@ function downloadExport(filename, contents, type) {
 let shareExport;
 function exportDialog(session) {
   const title = session ? 'Share workout' : 'Export all workout data';
-  const filename = session ? 'workout-' + session.day + '.txt' : 'training-log-' + dayKey() + '.txt';
+  const filename = session ? 'workout-' + session.day + '.txt' : 'reptrack-' + dayKey() + '.txt';
   const text = workoutExportText(state, session);
   shareExport = { title, filename, text, full:!session };
+  const canShare = android || typeof navigator.share === 'function';
   openDialog(title, '<div class="dialog-list"><label for="export-preview">Export preview</label>' +
     '<textarea id="export-preview" rows="9" readonly></textarea>' +
-    (typeof navigator.share === 'function' ? action('share-export', icon('share') + ' Share', 'primary') : '') +
-    action('copy-export', 'Copy text', typeof navigator.share === 'function' ? 'secondary' : 'primary') +
-    action('download-export', 'Download text file', 'secondary') +
-    (session ? '' : action('export', 'Download restore backup (.json)', 'secondary')) +
+    (canShare ? action('share-export', icon('share') + ' Share', 'primary') : '') +
+    action('copy-export', 'Copy text', canShare ? 'secondary' : 'primary') +
+    action('download-export', android ? 'Share text file' : 'Download text file', 'secondary') +
+    (session ? '' : action('export', android ? 'Share restore backup (.json)' : 'Download restore backup (.json)', 'secondary')) +
     '<p class="meta" id="export-status" role="status"></p></div>');
   dialog.querySelector('#export-preview').value = text;
 }
@@ -547,7 +565,7 @@ async function readBackup(file) {
       parsed.sessions.length + ' workouts and ' + parsed.routines.length + ' routines from the backup.</p>' +
       action('restore', 'Replace and restore', 'danger'));
   } catch {
-    notify('Choose a valid Training Log backup under 15 MB.');
+    notify('Choose a valid Reptrack backup under 15 MB.');
   }
 }
 
@@ -587,6 +605,11 @@ const actions = {
     const { title, filename, text, full } = shareExport;
     const status = dialog.querySelector('#export-status');
     try {
+      if (android) {
+        if (full) await shareAndroidFile(filename, text);
+        else await android.Share.share({ title, text });
+        return;
+      }
       const files = full ? [new File([text], filename, { type:'text/plain' })] : [];
       await navigator.share(files.length && navigator.canShare?.({ files }) ? { title, files } : { title, text });
     } catch (error) {
@@ -941,7 +964,9 @@ window.addEventListener('beforeinstallprompt', event => {
   event.preventDefault();
   installPrompt = event;
 });
-if ('serviceWorker' in navigator) {
+if (android) {
+  document.body.classList.add('android-app');
+} else if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').then(() => navigator.serviceWorker.ready).then(() => {
     offlineReady = true;
     status();

@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "Training Log",
-  "short_name": "Training Log",
+  "name": "Reptrack",
+  "short_name": "Reptrack",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="reptrack_launcher" type="drawable">@drawable/training_log_icon</item>
+    <color name="reptrack_icon_background">#22251C</color>
+</resources>

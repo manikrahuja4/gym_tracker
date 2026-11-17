@@ -2,5 +2,18 @@
   "name": "training-log",
   "private": true,
   "type": "module",
-  "scripts": { "start": "node server.mjs", "test": "node --test" }
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "android:sync": "node scripts/prepare-android.mjs && cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/core": "8.6.2",
+    "@capacitor/filesystem": "8.1.5",
+    "@capacitor/share": "8.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.2"
+  }
 }
