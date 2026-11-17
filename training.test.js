@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, startWorkout, logSet, undoSet, finishWorkout, setDefaults, coach, validBackup, addDefaultForearms, plannedItems } from './training.js';
+import { initialState, startWorkout, logSet, undoSet, finishWorkout, setDefaults, coach, validBackup, addDefaultForearms, plannedItems, editSet } from './training.js';
 
 test('undo restores a just-completed exercise and its prior rest timer', () => {
   const state = initialState();
@@ -70,4 +70,23 @@ test('saved Back & Biceps routines get forearms once, and a logged lift returns 
   const includesCurls = day => plannedItems(state, routine, day).some(item => item.exerciseId === curls.exerciseId);
   assert.equal(includesCurls('2026-11-22'), false);
   assert.equal(includesCurls('2026-11-23'), true);
+});
+
+test('editing an earlier set keeps later sets and corrects personal bests', () => {
+  const state = initialState();
+  const workout = startWorkout(state, state.routines[0], '2026-11-16', 1000);
+  logSet(state, 600, 7, 2000);
+  logSet(state, 60, 8, 3000);
+  assert.equal(editSet(state, workout.id, 0, 0, 60, 7), true);
+  const logs = workout.items[0].logs;
+  assert.deepEqual(logs.map(set => [set.weight, set.reps, set.record]), [[60, 7, false], [60, 8, true]]);
+  assert.equal(workout.restUntil, 93000);
+  assert.equal(workout.undo.index, 0);
+
+  const session = finishWorkout(state, 4000);
+  assert.equal(editSet(state, session.id, 0, 0, 60, 9), true);
+  assert.equal(session.items[0].logs[1].record, false);
+  assert.equal(validBackup(state), true);
+  const next = startWorkout(state, state.routines[0], '2026-11-17', 5000);
+  assert.equal(setDefaults(state, next.items[0]).reps, 9);
 });

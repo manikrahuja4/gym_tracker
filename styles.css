@@ -169,6 +169,10 @@ summary > :first-child { margin-right:auto; }
 summary::before { content:"›"; color:var(--lime); font-size:1.25rem; }
 details[open] summary::before { transform:rotate(90deg); }
 .journal-date { display:block; }
+.journal-exercise { padding-bottom:8px; }
+.journal-exercise h3 { margin:0; font-size:.9rem; }
+.logged-list > li:has([data-action="edit-set"]) { justify-content:flex-start; }
+.logged-list > li > [data-action="edit-set"] { margin-left:auto; }
 .set-chips { display:flex; gap:5px; flex-wrap:wrap; padding:0; margin:3px 0 8px; list-style:none; }
 .set-chips li { padding:5px 7px; border-radius:6px; color:#e0e9d2; background:var(--raised); font-size:.75rem; }
 .routine h2 { margin-top:10px; font-size:1.72rem; }

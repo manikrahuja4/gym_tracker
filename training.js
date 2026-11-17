@@ -129,6 +129,10 @@ export function coach(state, item) {
 
 export const rounded = value => Math.round(value * 100) / 100;
 const hasSets = item => !item.skipped && item.logs.length < item.sets;
+const validSet = (weight, reps) => Number.isFinite(weight) && weight >= 0 && weight <= 9999 &&
+  Number.isInteger(reps) && reps >= 1 && reps <= 999;
+const beats = (set, previous) => set.weight > previous.weight ||
+  (set.weight === previous.weight && set.reps > previous.reps);
 
 export function moveNext(workout) {
   const index = workout.items.findIndex((item, index) => index > workout.index && hasSets(item));
@@ -139,19 +143,40 @@ export function moveNext(workout) {
 export function logSet(state, weight, reps, now = Date.now()) {
   const workout = state.active;
   const item = workout?.items[workout.index];
-  if (!item || !hasSets(item) || !Number.isFinite(weight) || weight < 0 || weight > 9999 ||
-      !Number.isInteger(reps) || reps < 1 || reps > 999) return null;
+  if (!item || !hasSets(item) || !validSet(weight, reps)) return null;
   weight = rounded(weight);
   const previous = historyFor(state, item.exerciseId).flatMap(row => row.logs)
     .concat(workout.items.filter(row => row.exerciseId === item.exerciseId).flatMap(row => row.logs));
-  const record = previous.length > 0 && previous.every(set =>
-    weight > set.weight || (weight === set.weight && reps > set.reps));
+  const record = previous.length > 0 && previous.every(set => beats({ weight, reps }, set));
   const set = { weight, reps, record };
   workout.undo = { index:workout.index, restUntil:workout.restUntil };
   item.logs.push(set);
   workout.restUntil = now + state.rest * 1000;
   if (item.logs.length >= item.sets) moveNext(workout);
   return set;
+}
+
+export function editSet(state, workoutId, exerciseIndex, setIndex, weight, reps) {
+  const workouts = state.active ? [...state.sessions, state.active] : state.sessions;
+  const workout = workouts.find(row => row.id === workoutId);
+  const item = workout?.items[exerciseIndex];
+  const set = item?.logs[setIndex];
+  if (!set || !validSet(weight, reps)) return false;
+  set.weight = rounded(weight);
+  set.reps = reps;
+
+  let best;
+  for (const session of workouts) {
+    for (const exercise of session.items) {
+      if (exercise.exerciseId !== item.exerciseId) continue;
+      for (const entry of exercise.logs) {
+        const improved = !best || beats(entry, best);
+        entry.record = Boolean(best && improved);
+        if (improved) best = entry;
+      }
+    }
+  }
+  return true;
 }
 
 export function undoSet(workout) {

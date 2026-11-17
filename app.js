@@ -1,7 +1,7 @@
 import {
   uid, dayKey, fromDay, initialState, blankExercise, startWorkout, historyFor, setDefaults,
   coach, moveNext, logSet, undoSet, finishWorkout, setCount, volume, rounded, validBackup,
-  addDefaultSplit, hasDefaultSplit, addDefaultForearms, plannedItems, estimateWorkoutMinutes,
+  addDefaultSplit, hasDefaultSplit, addDefaultForearms, plannedItems, estimateWorkoutMinutes, editSet,
 } from './training.js';
 
 const storageKey = 'training-log-v1';
@@ -242,8 +242,7 @@ function workoutScreen() {
     '<button type="submit" class="button primary log-button" id="log-label">Log ' + loadLabel(draft.weight, draft.reps) + icon('check') + '</button></form>' +
     '<div class="work-actions">' + (workout.items.length > 1 ? action('defer', 'Next exercise', 'quiet') : '') +
     action('skip', 'Skip', 'quiet') + action('swap', 'Swap', 'quiet') + action('extra', '+ Set', 'quiet') + '</div>' +
-    (item.logs.length ? '<ul class="logged-list">' + item.logs.map((set, index) => '<li><span>Set ' + (index + 1) +
-      '</span><strong>' + loadLabel(set.weight, set.reps) + (set.record ? ' · PR' : '') + '</strong></li>').join('') + '</ul>' : '') +
+    (item.logs.length ? loggedSetList(workout, workout.index) : '') +
     '</section>' + queue + '</div>';
 }
 
@@ -267,9 +266,19 @@ function liftChart(rows) {
     escape(dateLabel(row.day)) + '</small></button>').join('') + '</div>';
 }
 
-function loggedDetails(item) {
-  return '<li><div><strong>' + escape(exerciseName(item.exerciseId)) + '</strong><ol class="set-chips">' +
-    item.logs.map(set => '<li>' + loadLabel(set.weight, set.reps) + (set.record ? ' · PR' : '') + '</li>').join('') + '</ol></div></li>';
+function loggedSetList(workout, exerciseIndex) {
+  const item = workout.items[exerciseIndex];
+  const name = exerciseName(item.exerciseId);
+  return '<ol class="logged-list">' + item.logs.map((set, setIndex) =>
+    '<li><span>Set ' + (setIndex + 1) + '</span><strong>' + loadLabel(set.weight, set.reps) +
+    (set.record ? ' · PR' : '') + '</strong>' + action('edit-set', 'Edit', 'quiet',
+      'data-workout="' + escape(workout.id) + '" data-exercise="' + exerciseIndex + '" data-set="' + setIndex +
+      '" aria-label="Edit ' + escape(name) + ' set ' + (setIndex + 1) + '"') + '</li>').join('') + '</ol>';
+}
+
+function loggedDetails(session) {
+  return session.items.map((item, index) => '<section class="journal-exercise"><h3>' +
+    escape(exerciseName(item.exerciseId)) + '</h3>' + loggedSetList(session, index) + '</section>').join('');
 }
 
 function progressScreen() {
@@ -289,10 +298,10 @@ function progressScreen() {
       '</ol></details>').join('') + '</div>' : '<p class="meta">Log a workout to see your lifts here.</p>') + '</section>' +
     '<section class="panel journal"><div class="spread"><h2>Training journal</h2>' + pill(sessions.length + ' workouts') + '</div>' +
     (sessions.length ? '<div class="history-rows">' + sessions.map(session =>
-      '<details><summary><div><strong>' + escape(session.name) + '</strong><span class="meta journal-date">' +
+      '<details data-session="' + escape(session.id) + '"><summary><div><strong>' + escape(session.name) + '</strong><span class="meta journal-date">' +
       escape(dateLabel(session.day, { month:'short', day:'numeric', year:'numeric' })) + '</span></div><span class="meta">' +
-      setCount(session) + ' sets</span></summary><ul class="logged-list">' + session.items.map(loggedDetails).join('') +
-      '</ul></details>').join('') + '</div>' : '<p class="meta">Completed sessions will appear here.</p>') + '</section></div>';
+      setCount(session) + ' sets</span></summary>' + loggedDetails(session) +
+      '</details>').join('') + '</div>' : '<p class="meta">Completed sessions will appear here.</p>') + '</section></div>';
 }
 
 function splitScreen() {
@@ -513,6 +522,19 @@ const actions = {
   },
   close:() => dialog.close(),
   step:stepValue,
+  'edit-set'({ dataset }) {
+    const { workout:workoutId, exercise, set } = dataset;
+    const workout = state.active?.id === workoutId ? state.active : state.sessions.find(row => row.id === workoutId);
+    const item = workout?.items[Number(exercise)];
+    const logged = item?.logs[Number(set)];
+    if (!logged) return;
+    openDialog('Edit set ' + (Number(set) + 1), '<form data-form="edit-set" data-workout="' + escape(workoutId) +
+      '" data-exercise="' + Number(exercise) + '" data-set="' + Number(set) + '"><p class="meta">' +
+      escape(exerciseName(item.exerciseId)) + '</p>' +
+      field('Weight · kg', 'weight', logged.weight, 'type="number" inputmode="decimal" min="0" max="9999" step="0.01" required') +
+      field('Reps', 'reps', logged.reps, 'type="number" inputmode="numeric" min="1" max="999" step="1" required') +
+      submit('Save changes') + '</form>');
+  },
   undo:() => workoutChange(undoSet),
   defer:() => workoutChange(moveNext),
   skip:() => workoutChange(workout => {
@@ -527,17 +549,24 @@ const actions = {
     const index = Number(dataset.index);
     const item = state.active.items[index];
     if (!item) return;
-    if (item.logs.length >= item.sets) {
-      openDialog(exerciseName(item.exerciseId), '<ul class="logged-list">' +
-        item.logs.map((set, i) => '<li><span>Set ' + (i + 1) + '</span><strong>' +
-        loadLabel(set.weight, set.reps) + '</strong></li>').join('') + '</ul>' +
-        (item.sets < 99 ? action('complete-extra', 'Add another set', 'primary', 'data-index="' + index + '"') : ''));
+    if (item.logs.length >= item.sets || (item.skipped && item.logs.length)) {
+      const indexAttr = 'data-index="' + index + '"';
+      const nextAction = item.logs.length < item.sets
+        ? action('resume-exercise', 'Resume exercise', 'primary', indexAttr)
+        : item.sets < 99 ? action('complete-extra', 'Add another set', 'primary', indexAttr) : '';
+      openDialog(exerciseName(item.exerciseId), loggedSetList(state.active, index) +
+        nextAction);
       return;
     }
+    actions['resume-exercise']({ dataset });
+  },
+  'resume-exercise'({ dataset }) {
+    const index = Number(dataset.index);
     workoutChange(workout => {
       workout.index = index;
       workout.items[index].skipped = false;
     });
+    dialog.close();
     document.querySelector('.logger')?.scrollIntoView({ block:'nearest' });
   },
   'complete-extra'({ dataset }) {
@@ -651,6 +680,26 @@ document.addEventListener('change', event => {
 });
 
 const forms = {
+  'edit-set'(form, data) {
+    const { workout:workoutId, exercise, set } = form.dataset;
+    let edited = false;
+    if (!update(next => {
+      edited = editSet(next, workoutId, Number(exercise), Number(set), Number(data.get('weight')), Number(data.get('reps')));
+    }) || !edited) return;
+    if (recap) recap = state.sessions.find(row => row.id === recap.id) ?? null;
+    dialog.close();
+    render();
+    const journalEntry = [...app.querySelectorAll('[data-session]')].find(row => row.dataset.session === workoutId);
+    if (journalEntry) journalEntry.open = true;
+    const editButton = [...app.querySelectorAll('[data-action="edit-set"]')].find(button =>
+      button.dataset.workout === workoutId && button.dataset.exercise === exercise && button.dataset.set === set);
+    if (editButton) editButton.focus({ preventScroll:true });
+    else if (state.active?.id === workoutId) {
+      const exerciseButton = app.querySelector('[data-action="jump"][data-index="' + Number(exercise) + '"]');
+      if (exerciseButton) actions.jump(exerciseButton);
+    }
+    notify('Set updated');
+  },
   pick(form, data) {
     if (!state.active || !exerciseOf(data.get('exerciseId'))) return;
     if (!update(next => addToWorkout(next, data.get('exerciseId'), form.dataset.mode))) return;
