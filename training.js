@@ -294,6 +294,36 @@ export const setCount = workout => workout.items.reduce((count, item) => count +
 export const volume = workout => rounded(workout.items.reduce((sum, item) =>
   sum + item.logs.reduce((load, set) => load + set.weight * set.reps, 0), 0));
 
+export function workoutExportText(state, session) {
+  const unit = state.unit ?? 'kg';
+  const names = new Map(state.exercises.map(exercise => [exercise.id, exercise.name]));
+  const exportSession = workout => {
+    const header = workout.day + ' · ' + workout.name + (workout === state.active ? ' (in progress)' : '');
+    const exercises = workout.items.filter(item => item.logs.length).map(item => {
+      const sets = item.logs.map((set, index) => '  ' + (index + 1) + '. ' +
+        displayWeight(set.weight, unit) + ' ' + unit + ' × ' + set.reps + ' reps' + (set.record ? ' (PR)' : ''));
+      return [names.get(item.exerciseId), ...sets].join('\n');
+    });
+    return [header, ...exercises].join('\n');
+  };
+  if (session) return exportSession(session) + '\n';
+
+  const sessions = [...state.sessions].sort((a, b) => a.day.localeCompare(b.day) || a.started - b.started);
+  if (state.active && setCount(state.active)) sessions.push(state.active);
+  const sections = ['Training Log', 'Weight unit: ' + unit, ...sessions.map(exportSession)];
+  if (state.routines.length) {
+    const routines = state.routines.map(routine => {
+      const name = routine.name + (routine.focus ? ' · ' + routine.focus : '');
+      const items = routine.items.map(item => '  - ' + names.get(item.exerciseId) + ': ' +
+        item.sets + ' sets × ' + (item.min === item.max ? item.min : item.min + '–' + item.max) +
+        ' reps' + (item.oncePerWeek ? ' (once every 7 days)' : ''));
+      return [name, ...items].join('\n');
+    });
+    sections.push('Saved routines (planned sets)\n' + routines.join('\n\n'));
+  }
+  return sections.join('\n\n') + '\n';
+}
+
 export function finishWorkout(state, now = Date.now()) {
   const workout = state.active;
   if (!workout || !setCount(workout)) return null;

@@ -2,7 +2,7 @@ import {
   uid, dayKey, fromDay, initialState, blankExercise, startWorkout, historyFor, setDefaults,
   coach, moveNext, logSet, undoSet, finishWorkout, setCount, volume, rounded, validBackup,
   initializeLibrary, searchExercises, plannedItems, estimateWorkoutMinutes, editSet,
-  workoutTemplates, addWorkoutTemplate, displayWeight, inputWeightInKg,
+  workoutTemplates, addWorkoutTemplate, displayWeight, inputWeightInKg, workoutExportText,
 } from './training.js';
 
 const storageKey = 'training-log-v1';
@@ -25,6 +25,7 @@ const paths = {
   plus:'M12 5v14M5 12h14',
   check:'m5 12 4 4L19 6',
   settings:'M4 7h16M4 17h16M8 4v6m8 4v6',
+  share:'M12 15V3m-4 4 4-4 4 4M5 11v9h14v-9',
 };
 const icon = name => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + paths[name] + '"/></svg>';
 const action = (name, label, style = 'secondary', attrs = '') =>
@@ -191,6 +192,7 @@ function recapScreen() {
     (improvements.length ? '<section class="panel"><h2>More volume than last time</h2><ul class="logged-list">' + improvements.join('') + '</ul></section>' : '') +
     (next ? '<section class="panel spread"><span class="meta">Next in your split</span><strong>' + escape(next.name) + '</strong></section>' : '') +
     (recap.routineId === null && savedRecapRoutine !== recap.id ? action('save-routine', 'Save as a routine') : '') +
+    action('export-workout', icon('share') + ' Share workout', 'secondary', 'data-id="' + escape(recap.id) + '"') +
     action('back-today', 'Back to Today ' + icon('arrow'), 'primary') + '</div>';
 }
 
@@ -286,11 +288,14 @@ function historyScreen() {
   if (!trained.some(exercise => exercise.id === selectedLift)) selectedLift = trained[0]?.id ?? '';
   const history = historyFor(state, selectedLift);
   const sessions = [...state.sessions].sort(dateSort);
-  const journal = '<section class="panel journal"><h2>Workouts</h2>' +
+  const journal = '<section class="panel journal"><div class="spread"><h2>Workouts</h2>' +
+    (sessions.length || (state.active && setCount(state.active)) || state.routines.length ?
+      action('export-history', icon('share') + ' Export all', 'secondary', 'aria-label="Export all workout data"') : '') + '</div>' +
     (sessions.length ? '<div class="history-rows">' + sessions.map(session =>
       '<details data-session="' + escape(session.id) + '"><summary><div><strong>' + escape(session.name) + '</strong><span class="meta journal-date">' +
       escape(dateLabel(session.day, { month:'short', day:'numeric', year:'numeric' })) + '</span></div><span class="meta">' +
       setCount(session) + ' sets</span></summary>' + loggedDetails(session) +
+      action('export-workout', icon('share') + ' Share workout', 'secondary', 'data-id="' + escape(session.id) + '"') +
       '</details>').join('') + '</div>' : '<p class="meta">Completed workouts will appear here.</p>') + '</section>';
   if (!trained.length) return '<header class="page-heading"><h1>History</h1></header><div class="history-layout">' + journal + '</div>';
   return '<header class="page-heading"><h1>History</h1></header><div class="history-layout">' + journal +
@@ -491,22 +496,43 @@ function settings() {
     '<label>Weight unit<select name="unit"><option value="kg">Kilograms (kg)</option><option value="lb"' +
     (unit() === 'lb' ? ' selected' : '') + '>Pounds (lb)</option></select></label>' +
     field('Rest timer · seconds', 'rest', state.rest, 'type="number" min="0" max="600" required') +
-    submit('Save settings') + '</form><hr><div class="dialog-list"><h3>Backups</h3>' +
+    submit('Save settings') + '</form><hr><div class="dialog-list"><h3>Export and backup</h3>' +
     '<p class="meta">Workouts are saved in this browser. Export a backup to keep a copy or move to another device.</p>' +
-    action('export', 'Export backup', 'secondary') +
+    action('export-history', 'Export all workout data', 'secondary') +
+    action('export', 'Download restore backup (.json)', 'secondary') +
     '<label class="file-picker">Restore backup<input id="restore-file" type="file" accept=".json,application/json"></label>' +
     (installPrompt ? action('install', 'Install app', 'secondary') : '') + '</div>');
 }
 
 function exportBackup() {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type:'application/json' }));
+  downloadExport('training-log-' + dayKey() + '.json', JSON.stringify(state, null, 2), 'application/json');
+}
+
+function downloadExport(filename, contents, type) {
+  const url = URL.createObjectURL(new Blob([contents], { type }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = 'training-log-' + dayKey() + '.json';
+  link.download = filename;
   document.body.append(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+let shareExport;
+function exportDialog(session) {
+  const title = session ? 'Share workout' : 'Export all workout data';
+  const filename = session ? 'workout-' + session.day + '.txt' : 'training-log-' + dayKey() + '.txt';
+  const text = workoutExportText(state, session);
+  shareExport = { title, filename, text, full:!session };
+  openDialog(title, '<div class="dialog-list"><label for="export-preview">Export preview</label>' +
+    '<textarea id="export-preview" rows="9" readonly></textarea>' +
+    (typeof navigator.share === 'function' ? action('share-export', icon('share') + ' Share', 'primary') : '') +
+    action('copy-export', 'Copy text', typeof navigator.share === 'function' ? 'secondary' : 'primary') +
+    action('download-export', 'Download text file', 'secondary') +
+    (session ? '' : action('export', 'Download restore backup (.json)', 'secondary')) +
+    '<p class="meta" id="export-status" role="status"></p></div>');
+  dialog.querySelector('#export-preview').value = text;
 }
 
 let importState;
@@ -552,6 +578,36 @@ function updateDraft() {
 
 const actions = {
   settings, library, templates, choose:chooseWorkout,
+  'export-workout'({ dataset }) {
+    const session = state.sessions.find(row => row.id === dataset.id);
+    if (session) exportDialog(session);
+  },
+  'export-history':() => exportDialog(),
+  async 'share-export'() {
+    const { title, filename, text, full } = shareExport;
+    const status = dialog.querySelector('#export-status');
+    try {
+      const files = full ? [new File([text], filename, { type:'text/plain' })] : [];
+      await navigator.share(files.length && navigator.canShare?.({ files }) ? { title, files } : { title, text });
+    } catch (error) {
+      if (error.name !== 'AbortError') status.textContent = 'Sharing is unavailable. Copy the text or download the file.';
+    }
+  },
+  async 'copy-export'() {
+    const preview = dialog.querySelector('#export-preview');
+    const status = dialog.querySelector('#export-status');
+    try {
+      await navigator.clipboard.writeText(shareExport.text);
+      status.textContent = 'Copied to clipboard.';
+    } catch {
+      preview.focus();
+      preview.select();
+      status.textContent = 'Text selected. Use your device’s Copy command or download the file.';
+    }
+  },
+  'download-export'() {
+    downloadExport(shareExport.filename, shareExport.text, 'text/plain;charset=utf-8');
+  },
   'use-template'({ dataset }) {
     if (!update(next => addWorkoutTemplate(next, dataset.id))) return;
     dialog.close();

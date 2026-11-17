@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initialState, startWorkout, logSet, undoSet, finishWorkout, setDefaults, coach, validBackup, addDefaultForearms, plannedItems, editSet } from './training.js';
 import { addWorkoutTemplate, displayWeight, inputWeightInKg, initializeLibrary, searchExercises } from './training.js';
+import { workoutExportText } from './training.js';
 
 test('undo restores a just-completed exercise and its prior rest timer', () => {
   const state = initialState();
@@ -135,4 +136,22 @@ test('library upgrades are repeatable and keep existing exercise names and IDs',
   assert.equal(searchExercises(state.exercises, 'overhead press')[0].name, 'Barbell Overhead Press');
   assert.deepEqual(searchExercises(state.exercises, 'zzzz'), []);
   assert.equal(validBackup(state), true);
+});
+
+test('exporting one workout excludes other sessions while the full report includes routines and the active log', () => {
+  const state = initialState();
+  state.unit = 'lb';
+  startWorkout(state, state.routines[0], '2026-11-16', 1000);
+  logSet(state, 61.23, 8, 2000);
+  const chest = finishWorkout(state, 3000);
+  startWorkout(state, state.routines[1], '2026-11-17', 4000);
+  logSet(state, 45.36, 10, 5000);
+
+  const single = workoutExportText(state, chest);
+  assert.match(single, /2026-11-16 · Chest & Triceps\nBench Press\n  1\. 135 lb × 8 reps/);
+  assert.doesNotMatch(single, /2026-11-17|Saved routines/);
+  const full = workoutExportText(state);
+  assert.ok(full.includes(single.trim()));
+  assert.match(full, /2026-11-17 · Back & Biceps \(in progress\)\nLat Pulldown\n  1\. 100 lb × 10 reps/);
+  assert.match(full, /Saved routines \(planned sets\)/);
 });
